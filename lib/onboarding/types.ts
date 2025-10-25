@@ -124,3 +124,33 @@ export type OnboardingSubmissionFilters = {
   maxScore?: number;
   query?: string;
 };
+
+export type OnboardingChecklistStatus = "pending" | "in_progress" | "complete";
+
+export type OnboardingChecklistItem = {
+  id: string;
+  title: string;
+  description?: string;
+  status: OnboardingChecklistStatus;
+  dueDate?: string;
+  updatedAt: string;
+  completedAt?: string;
+};
+
+export type OnboardingChecklist = {
+  startupId: string;
+  createdAt: string;
+  updatedAt: string;
+  notes?: string;
+  items: OnboardingChecklistItem[];
+};
+
+export type OnboardingDocument = {
+  key: string;
+  name: string;
+  url?: string;
+  size: number;
+  contentType?: string;
+  uploadedAt: string;
+  uploadedBy?: string;
+};

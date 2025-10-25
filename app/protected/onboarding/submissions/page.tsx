@@ -408,6 +408,12 @@ export default function SubmissionReviewPage() {
                     >
                       {expandedId === submission.id ? "Hide details" : "View full responses"}
                     </button>
+                    <Link
+                      href={`/protected/onboarding/startups/${submission.id}?userId=${encodeURIComponent(submission.userId)}`}
+                      className="rounded-full border border-emerald-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-emerald-200 transition hover:bg-emerald-500/10"
+                    >
+                      Open workspace
+                    </Link>
                     {submission.score?.status === "advance" && (
                       <span className="text-xs text-emerald-200">
                         Meets auto-advance threshold

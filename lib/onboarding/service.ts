@@ -1,6 +1,11 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
+import {
+  GetObjectCommand,
+  HeadObjectCommand,
+  ListObjectsV2Command,
+  PutObjectCommand,
+} from "@aws-sdk/client-s3";
 import s3 from "@/lib/storage/storage";
 import {
   OnboardingAttachment,
@@ -9,6 +14,10 @@ import {
   OnboardingForm,
   OnboardingScoringConfig,
   OnboardingScoringRule,
+  OnboardingChecklist,
+  OnboardingChecklistItem,
+  OnboardingChecklistStatus,
+  OnboardingDocument,
   OnboardingSection,
   OnboardingSubmission,
   OnboardingSubmissionScore,
@@ -18,6 +27,9 @@ import {
 } from "./types";
 
 const CONFIG_KEY = "config.json";
+const SUBMISSION_PREFIX = "submissions/";
+const CHECKLIST_PREFIX = "checklists/";
+const DOCUMENTS_PREFIX = "documents/";
 
 const getBucketName = () => {
   const bucket = process.env.S3_ONBOARDING_BUCKET;
@@ -264,7 +276,7 @@ export const saveOnboardingSubmission = async (
   await s3.send(
     new PutObjectCommand({
       Bucket: bucket,
-      Key: `submissions/${submission.userId}/${id}.json`,
+      Key: `${SUBMISSION_PREFIX}${submission.userId}/${id}.json`,
       Body: toBuffer(record),
       ContentType: "application/json",
     }),
@@ -507,7 +519,7 @@ const listSubmissionKeys = async (bucket: string): Promise<string[]> => {
     const response = await s3.send(
       new ListObjectsV2Command({
         Bucket: bucket,
-        Prefix: "submissions/",
+        Prefix: SUBMISSION_PREFIX,
         ContinuationToken: continuationToken,
       }),
     );
@@ -613,6 +625,47 @@ const matchesQuery = (submission: OnboardingSubmissionSummary, query: string): b
   return haystack.some((value) => value.toLowerCase().includes(lowered));
 };
 
+const buildSubmissionSummary = (
+  record: OnboardingSubmission,
+  resolvedResponses: OnboardingSubmissionResolvedField[],
+  stageFieldMeta: OnboardingField | undefined,
+  stageFieldId: string | undefined,
+  nameFieldId: string | undefined,
+): OnboardingSubmissionSummary => {
+  const stageResponse = stageFieldId
+    ? resolvedResponses.find((response) => response.fieldId === stageFieldId)
+    : undefined;
+  const nameResponse = nameFieldId
+    ? resolvedResponses.find((response) => response.fieldId === nameFieldId)
+    : undefined;
+
+  const stageValues = responseToStrings(stageResponse?.value ?? null);
+  const stageValue = stageValues[0];
+  const stageLabel = stageValue
+    ? stageFieldMeta?.options?.find((option) => option.value === stageValue)?.label ?? stageValue
+    : undefined;
+  const companyName = responseToStrings(nameResponse?.value ?? null)[0];
+  const status = record.score?.status ?? "review";
+
+  return {
+    id: record.id,
+    formId: record.formId,
+    userId: record.userId,
+    submittedAt: record.submittedAt,
+    score: record.score,
+    status,
+    companyName,
+    companyStage:
+      stageValue !== undefined
+        ? {
+            value: stageValue,
+            label: stageLabel,
+          }
+        : undefined,
+    responses: resolvedResponses,
+  };
+};
+
 export const listOnboardingSubmissions = async (
   form: OnboardingForm,
   filters: OnboardingSubmissionFilters = {},
@@ -644,40 +697,15 @@ export const listOnboardingSubmissions = async (
         resolveResponse(response, registry),
       );
 
-      const stageResponse = stageFieldId
-        ? resolvedResponses.find((response) => response.fieldId === stageFieldId)
-        : undefined;
-      const nameResponse = nameFieldId
-        ? resolvedResponses.find((response) => response.fieldId === nameFieldId)
-        : undefined;
-
-      const stageValues = responseToStrings(stageResponse?.value ?? null);
-      const stageValue = stageValues[0];
-      const stageLabel = stageValue
-        ? stageFieldMeta?.options?.find((option) => option.value === stageValue)?.label ?? stageValue
-        : undefined;
-      const companyName = responseToStrings(nameResponse?.value ?? null)[0];
-      const status = record.score?.status ?? "review";
-
-      const submission: OnboardingSubmissionSummary = {
-        id: record.id,
-        formId: record.formId,
-        userId: record.userId,
-        submittedAt: record.submittedAt,
-        score: record.score,
-        status,
-        companyName,
-        companyStage:
-          stageValue !== undefined
-            ? {
-                value: stageValue,
-                label: stageLabel,
-              }
-            : undefined,
-        responses: resolvedResponses,
-      };
-
-      submissions.push(submission);
+      submissions.push(
+        buildSubmissionSummary(
+          record,
+          resolvedResponses,
+          stageFieldMeta,
+          stageFieldId,
+          nameFieldId,
+        ),
+      );
     } catch (error) {
       console.error(`Failed to load submission ${key}`, error);
     }
@@ -737,6 +765,291 @@ export const listOnboardingSubmissions = async (
       max: scoreMax,
     },
   };
+};
+
+const sanitizeFileName = (name: string) =>
+  name
+    .trim()
+    .replace(/\s+/g, "-")
+    .replace(/[^a-zA-Z0-9._-]/g, "")
+    .substring(0, 120) || "document";
+
+const ensureChecklistStatus = (status: string | undefined): OnboardingChecklistStatus => {
+  switch (status) {
+    case "in_progress":
+    case "complete":
+      return status;
+    default:
+      return "pending";
+  }
+};
+
+const normalizeChecklistItem = (item: Partial<OnboardingChecklistItem>): OnboardingChecklistItem => {
+  const now = new Date().toISOString();
+  return {
+    id: item.id ?? randomUUID(),
+    title: item.title?.trim() || "Onboarding task",
+    description: item.description?.trim() || undefined,
+    status: ensureChecklistStatus(item.status as OnboardingChecklistStatus),
+    dueDate: item.dueDate ?? undefined,
+    updatedAt: item.updatedAt ?? now,
+    completedAt: item.completedAt ?? undefined,
+  };
+};
+
+const normalizeChecklist = (startupId: string, checklist?: Partial<OnboardingChecklist>): OnboardingChecklist => {
+  const createdAt = checklist?.createdAt ?? new Date().toISOString();
+  const items = (checklist?.items ?? []).map(normalizeChecklistItem);
+  return {
+    startupId,
+    createdAt,
+    updatedAt: checklist?.updatedAt ?? createdAt,
+    notes: checklist?.notes?.trim() || undefined,
+    items,
+  };
+};
+
+const checklistTemplate = (startupId: string): OnboardingChecklist => {
+  const now = new Date();
+  const iso = (days: number) => new Date(now.getTime() + days * 24 * 60 * 60 * 1000).toISOString();
+  return normalizeChecklist(startupId, {
+    startupId,
+    createdAt: now.toISOString(),
+    updatedAt: now.toISOString(),
+    items: [
+      {
+        id: randomUUID(),
+        title: "Schedule onboarding kickoff call",
+        description: "Align with founders on expectations, milestones, and support structure.",
+        status: "pending",
+        dueDate: iso(3),
+        updatedAt: now.toISOString(),
+      },
+      {
+        id: randomUUID(),
+        title: "Upload incorporation documents",
+        description: "Certificate of incorporation and board resolution for incubator participation.",
+        status: "pending",
+        dueDate: iso(5),
+        updatedAt: now.toISOString(),
+      },
+      {
+        id: randomUUID(),
+        title: "Submit founders KYC",
+        description: "Government ID and address proof for all founders and key signatories.",
+        status: "pending",
+        dueDate: iso(7),
+        updatedAt: now.toISOString(),
+      },
+      {
+        id: randomUUID(),
+        title: "Share banking details",
+        description: "Provide cancelled cheque and bank account information for disbursements.",
+        status: "pending",
+        dueDate: iso(10),
+        updatedAt: now.toISOString(),
+      },
+      {
+        id: randomUUID(),
+        title: "Upload latest pitch deck",
+        description: "Ensure mentors and investors access the most recent narrative.",
+        status: "pending",
+        dueDate: iso(14),
+        updatedAt: now.toISOString(),
+      },
+    ],
+  });
+};
+
+export const getOnboardingSubmissionDetail = async (
+  form: OnboardingForm,
+  submissionId: string,
+  userId: string,
+): Promise<OnboardingSubmissionSummary | null> => {
+  const bucket = getBucketName();
+  const key = `${SUBMISSION_PREFIX}${userId}/${submissionId}.json`;
+  try {
+    const object = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      }),
+    );
+    const raw = await streamToString(object.Body);
+    if (!raw) {
+      return null;
+    }
+
+    const record = JSON.parse(raw) as OnboardingSubmission;
+    const registry = buildFieldRegistry(form);
+    const stageFieldId = guessStageFieldId(registry);
+    const nameFieldId = guessNameFieldId(registry);
+    const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
+    const resolvedResponses = (record.responses ?? []).map((response) =>
+      resolveResponse(response, registry),
+    );
+
+    return buildSubmissionSummary(
+      record,
+      resolvedResponses,
+      stageFieldMeta,
+      stageFieldId,
+      nameFieldId,
+    );
+  } catch (error: any) {
+    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
+      return null;
+    }
+    console.error("Failed to load onboarding submission", error);
+    throw new Error("Unable to load onboarding submission");
+  }
+};
+
+export const getOnboardingChecklist = async (
+  startupId: string,
+): Promise<OnboardingChecklist> => {
+  const bucket = getBucketName();
+  const key = `${CHECKLIST_PREFIX}${startupId}.json`;
+
+  try {
+    const object = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      }),
+    );
+    const raw = await streamToString(object.Body);
+    if (!raw) {
+      return checklistTemplate(startupId);
+    }
+    const parsed = JSON.parse(raw) as OnboardingChecklist;
+    return normalizeChecklist(startupId, parsed);
+  } catch (error: any) {
+    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
+      return checklistTemplate(startupId);
+    }
+    console.error("Failed to load onboarding checklist", error);
+    throw new Error("Unable to load onboarding checklist");
+  }
+};
+
+export const saveOnboardingChecklist = async (
+  startupId: string,
+  checklist: OnboardingChecklist,
+): Promise<OnboardingChecklist> => {
+  const bucket = getBucketName();
+  const normalized = normalizeChecklist(startupId, {
+    ...checklist,
+    startupId,
+    updatedAt: new Date().toISOString(),
+  });
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: `${CHECKLIST_PREFIX}${startupId}.json`,
+      Body: toBuffer(normalized),
+      ContentType: "application/json",
+    }),
+  );
+
+  return normalized;
+};
+
+const buildDocumentFromMetadata = (
+  key: string,
+  name: string,
+  size: number,
+  contentType: string | undefined,
+  uploadedAt: string,
+  uploadedBy?: string,
+) => {
+  const attachment = enrichAttachment({
+    key,
+    name,
+    size,
+    contentType: contentType ?? "application/octet-stream",
+  });
+
+  const document: OnboardingDocument = {
+    key,
+    name,
+    size,
+    contentType,
+    uploadedAt,
+    uploadedBy,
+    url: attachment.url,
+  };
+  return document;
+};
+
+export const listOnboardingDocuments = async (
+  startupId: string,
+): Promise<OnboardingDocument[]> => {
+  const bucket = getBucketName();
+  const prefix = `${DOCUMENTS_PREFIX}${startupId}/`;
+
+  const response = await s3.send(
+    new ListObjectsV2Command({
+      Bucket: bucket,
+      Prefix: prefix,
+    }),
+  );
+
+  const entries = (response.Contents ?? []).filter((object) => object.Key && !object.Key.endsWith("/"));
+
+  const documents = await Promise.all(
+    entries.map(async (object) => {
+      const key = object.Key as string;
+      const head = await s3.send(
+        new HeadObjectCommand({
+          Bucket: bucket,
+          Key: key,
+        }),
+      );
+  const name = head.Metadata?.originalname ?? key.substring(key.lastIndexOf("/") + 1);
+      const size = Number(object.Size ?? head.ContentLength ?? 0);
+      const uploadedAt = (object.LastModified ?? head.LastModified ?? new Date()).toISOString();
+      const contentType = head.ContentType ?? undefined;
+  const uploadedBy = head.Metadata?.uploadedby;
+
+  return buildDocumentFromMetadata(key, name, size, contentType, uploadedAt, uploadedBy);
+    }),
+  );
+
+  return documents.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+};
+
+export const uploadOnboardingDocument = async (
+  startupId: string,
+  file: { name: string; contentType: string; buffer: Buffer; uploadedBy?: string },
+): Promise<OnboardingDocument> => {
+  const bucket = getBucketName();
+  const safeName = sanitizeFileName(file.name);
+  const key = `${DOCUMENTS_PREFIX}${startupId}/${Date.now()}-${randomUUID()}-${safeName}`;
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: key,
+      Body: file.buffer,
+      ContentType: file.contentType || "application/octet-stream",
+      Metadata: {
+        originalname: file.name,
+        uploadedby: file.uploadedBy ?? "platform",
+      },
+      ACL: "public-read",
+    }),
+  );
+
+  return buildDocumentFromMetadata(
+    key,
+    file.name,
+    file.buffer.length,
+    file.contentType,
+    new Date().toISOString(),
+    file.uploadedBy,
+  );
 };
 
 export const enrichAttachment = (attachment: OnboardingAttachment): OnboardingAttachment => {
