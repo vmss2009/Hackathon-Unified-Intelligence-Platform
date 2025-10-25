@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
+import Link from "next/link";
 import { signOut } from "next-auth/react";
 
 type UserProfile = {
@@ -13,6 +14,33 @@ export default function ProtectedPage() {
 	const [profile, setProfile] = useState<UserProfile | null>(null);
 	const [error, setError] = useState<string | null>(null);
 	const [loading, setLoading] = useState(true);
+
+	const navItems = useMemo(
+		() => [
+			{
+				title: "Onboarding Workspace",
+				description:
+					"Design, publish, and track your startup onboarding flows in real time.",
+				href: "/protected/onboarding",
+				label: "Manage onboarding",
+			},
+			{
+				title: "Public Application",
+				description:
+					"Preview the applicant-facing experience exactly as founders will see it.",
+				href: "/onboarding",
+				label: "Open public form",
+			},
+			{
+				title: "Unified Intelligence Platform",
+				description:
+					"Return to the main overview to explore product capabilities and updates.",
+				href: "/",
+				label: "Visit home",
+			},
+		],
+		[],
+	);
 
 	useEffect(() => {
 		let active = true;
@@ -79,17 +107,15 @@ export default function ProtectedPage() {
 		);
 	}
 
-	if (!profile) {
-		return null;
-	}
-
 	return (
 		<section className="flex flex-col gap-6 p-8">
 			<header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 				<div>
-					<h1 className="text-3xl font-semibold">User Profile</h1>
+					<h1 className="text-3xl font-semibold text-gray-900">
+						Welcome back{profile?.firstName ? `, ${profile.firstName}` : ""}!
+					</h1>
 					<p className="text-sm text-gray-500">
-						Basic account details available to signed-in users.
+						Choose where you’d like to go next across the Unified Intelligence Platform.
 					</p>
 				</div>
 				<button
@@ -100,34 +126,25 @@ export default function ProtectedPage() {
 				</button>
 			</header>
 
-			<dl className="grid gap-4 sm:grid-cols-2">
-				<div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-					<dt className="text-xs uppercase tracking-wide text-gray-500">
-						Email
-					</dt>
-					<dd className="mt-1 text-base font-medium text-gray-900">
-						{profile.email}
-					</dd>
-				</div>
-
-				<div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-					<dt className="text-xs uppercase tracking-wide text-gray-500">
-						First Name
-					</dt>
-					<dd className="mt-1 text-base font-medium text-gray-900">
-						{profile.firstName ?? "Not provided"}
-					</dd>
-				</div>
-
-				<div className="rounded-lg border border-gray-200 bg-white p-4 shadow-sm">
-					<dt className="text-xs uppercase tracking-wide text-gray-500">
-						Last Name
-					</dt>
-					<dd className="mt-1 text-base font-medium text-gray-900">
-						{profile.lastName ?? "Not provided"}
-					</dd>
-				</div>
-			</dl>
+			<div className="grid gap-4 md:grid-cols-3">
+				{navItems.map((item) => (
+					<Link
+						key={item.href}
+						href={item.href}
+						className="group flex flex-col justify-between gap-3 rounded-2xl border border-gray-200 bg-white p-6 shadow-sm transition hover:-translate-y-1 hover:border-blue-500/60 hover:shadow-lg"
+					>
+						<div className="space-y-2">
+							<h2 className="text-lg font-semibold text-gray-900">
+								{item.title}
+							</h2>
+							<p className="text-sm text-gray-500">{item.description}</p>
+						</div>
+						<span className="text-xs font-semibold uppercase tracking-wide text-blue-600 transition group-hover:text-blue-500">
+							{item.label}
+						</span>
+					</Link>
+					))}
+			</div>
 		</section>
 	);
 }
