@@ -25,13 +25,33 @@ export type GrantRecordPayload = {
   metadata?: Record<string, unknown> | null;
 };
 
+export type GrantDisbursementStatus = "draft" | "pending" | "approved" | "rejected" | "released";
+
+export type GrantDisbursementApprovalPayload = {
+  id: string;
+  status: GrantDisbursementStatus;
+  note?: string;
+  actorId?: string;
+  actorName?: string;
+  actorEmail?: string;
+  decidedAt?: string;
+};
+
 export type GrantDisbursementPayload = {
   id: string;
   amount: number;
   date: string;
   tranche?: string;
   reference?: string;
+  milestoneId?: string;
+  requestedBy?: string;
+  requestedAt?: string;
+  targetReleaseDate?: string;
+  status?: GrantDisbursementStatus;
+  approvals?: GrantDisbursementApprovalPayload[];
+  releasedAt?: string;
   notes?: string;
+  metadata?: Record<string, unknown> | null;
 };
 
 export type GrantExpenditurePayload = {
@@ -93,13 +113,31 @@ export type GrantRecord = {
   metadata?: Record<string, unknown>;
 };
 
+export type GrantDisbursementApproval = {
+  id: string;
+  status: GrantDisbursementStatus;
+  note?: string;
+  actorId?: string;
+  actorName?: string;
+  actorEmail?: string;
+  decidedAt: string;
+};
+
 export type GrantDisbursement = {
   id: string;
   amount: number;
   date: string;
   tranche?: string;
   reference?: string;
+  milestoneId?: string;
+  requestedBy?: string;
+  requestedAt?: string;
+  targetReleaseDate?: string;
+  status: GrantDisbursementStatus;
+  approvals: GrantDisbursementApproval[];
+  releasedAt?: string;
   notes?: string;
+  metadata?: Record<string, unknown>;
 };
 
 export type GrantExpenditure = {
@@ -229,4 +267,75 @@ export type GrantComplianceReport = {
 export type GrantReportBundle = {
   certificate: GrantUtilizationCertificate;
   complianceReport: GrantComplianceReport;
+};
+
+export type GrantFinancialSummary = {
+  startupId: string;
+  grantId: string;
+  grantName: string;
+  currency: string;
+  totalSanctioned: number;
+  totalReleased: number;
+  totalPendingAmount: number;
+  totalRejectedAmount: number;
+  totalUtilised: number;
+  availableToUtilise: number;
+  remainingSanctionBalance: number;
+  pendingDisbursementCount: number;
+  releasedDisbursementCount: number;
+  upcomingTargetRelease?: string;
+  lastDisbursementAt?: string;
+};
+
+export type CurrencyFinancialTotals = {
+  currency: string;
+  totalSanctioned: number;
+  totalReleased: number;
+  totalPendingAmount: number;
+  totalRejectedAmount: number;
+  totalUtilised: number;
+  availableToUtilise: number;
+  remainingSanctionBalance: number;
+};
+
+export type IncubatorFinancialOverview = {
+  totalsByCurrency: CurrencyFinancialTotals[];
+  grants: GrantFinancialSummary[];
+  updatedAt?: string;
+};
+
+export type GrantDisbursementRequestInput = {
+  grantId: string;
+  amount: number;
+  tranche?: string;
+  reference?: string;
+  milestoneId?: string;
+  targetReleaseDate?: string;
+  requestedBy: {
+    id: string;
+    name?: string;
+    email?: string;
+  };
+  notes?: string;
+};
+
+export type GrantDisbursementStatusUpdateInput = {
+  grantId: string;
+  disbursementId: string;
+  status: GrantDisbursementStatus;
+  actor: {
+    id: string;
+    name?: string;
+    email?: string;
+  };
+  note?: string;
+  releaseReference?: string;
+  releaseDate?: string;
+};
+
+export type FlattenedGrantDisbursement = {
+  startupId: string;
+  grantId: string;
+  grantName: string;
+  disbursement: GrantDisbursement;
 };

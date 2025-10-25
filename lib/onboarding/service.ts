@@ -48,6 +48,7 @@ import {
   OnboardingGrantOpportunitySignals,
   OnboardingGrantOpportunitySnapshot,
 } from "./types";
+import type { GrantCatalogPayload } from "@/lib/grants/types";
 
 const DOCUMENTS_PREFIX = "documents/";
 const CONFIG_RECORD_ID = "startup-onboarding-config";
@@ -1643,6 +1644,46 @@ export const applyMilestoneUpdates = async (
   plan.logs = plan.logs
     .filter((log, index, array) => index === array.findIndex((entry) => entry.id === log.id))
     .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const stored = await saveMilestonePlan(startupId, plan);
+  return buildMilestoneSnapshot(stored);
+};
+
+export const deleteOnboardingMilestone = async (
+  startupId: string,
+  milestoneId: string,
+  _actor?: string,
+): Promise<OnboardingMilestonePlanSnapshot> => {
+  const trimmedId = milestoneId?.trim();
+  if (!trimmedId) {
+    throw new Error("Milestone id is required");
+  }
+
+  const plan = await getMilestonePlanInternal(startupId);
+  const index = plan.milestones.findIndex((entry) => entry.id === trimmedId);
+  if (index === -1) {
+    throw new Error("Milestone not found");
+  }
+
+  const catalogRecord = await prisma.onboardingGrantCatalogRecord.findUnique({ where: { startupId } });
+  if (catalogRecord) {
+    const payload = catalogRecord.payload as GrantCatalogPayload | null | undefined;
+    const blockingGrant = payload?.grants?.find((grant) =>
+      Array.isArray(grant.disbursements)
+        ? grant.disbursements.some((disbursement) => disbursement?.milestoneId === trimmedId)
+        : false,
+    );
+
+    if (blockingGrant) {
+      throw new Error("Cannot delete milestone while grant disbursements reference it");
+    }
+  }
+
+  plan.milestones.splice(index, 1);
+
+  const nowIso = new Date().toISOString();
+  plan.updatedAt = nowIso;
+  plan.logs = plan.logs.filter((log) => log.milestoneId !== trimmedId);
 
   const stored = await saveMilestonePlan(startupId, plan);
   return buildMilestoneSnapshot(stored);

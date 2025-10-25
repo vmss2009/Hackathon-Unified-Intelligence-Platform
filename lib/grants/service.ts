@@ -1,5 +1,8 @@
+import type { Prisma } from "@prisma/client";
+import { randomUUID } from "crypto";
 import { prisma } from "@/lib/db/prisma";
 import type {
+  FlattenedGrantDisbursement,
   GrantCatalog,
   GrantCatalogPayload,
   GrantCatalogRecord,
@@ -7,22 +10,46 @@ import type {
   GrantCompliancePayload,
   GrantComplianceReport,
   GrantComplianceStatus,
+  GrantFinancialSummary,
   GrantDisbursement,
+  GrantDisbursementApproval,
+  GrantDisbursementApprovalPayload,
   GrantDisbursementPayload,
+  GrantDisbursementRequestInput,
+  GrantDisbursementStatus,
+  GrantDisbursementStatusUpdateInput,
   GrantExpenditure,
   GrantExpenditurePayload,
+  CurrencyFinancialTotals,
   GrantRecord,
   GrantRecordPayload,
   GrantReportBundle,
   GrantReportRequest,
   GrantReportWindow,
   GrantUtilizationCertificate,
+  IncubatorFinancialOverview,
 } from "./types";
 
 const DEFAULT_CATALOG: GrantCatalog = {
   version: 1,
   updatedAt: undefined,
   grants: [],
+};
+
+const DISBURSEMENT_STATUS_VALUES: GrantDisbursementStatus[] = [
+  "draft",
+  "pending",
+  "approved",
+  "rejected",
+  "released",
+];
+
+const isValidStatus = (value: unknown): value is GrantDisbursementStatus => {
+  return typeof value === "string" && DISBURSEMENT_STATUS_VALUES.includes(value as GrantDisbursementStatus);
+};
+
+const toStatus = (value: unknown, fallback: GrantDisbursementStatus): GrantDisbursementStatus => {
+  return isValidStatus(value) ? (value as GrantDisbursementStatus) : fallback;
 };
 
 const parseNumber = (value: unknown, fallback = 0): number => {
@@ -49,14 +76,43 @@ const ensureIsoString = (value: unknown): string | undefined => {
   return date.toISOString();
 };
 
-const normaliseDisbursement = (payload: GrantDisbursementPayload): GrantDisbursement => ({
+const normaliseApproval = (payload: GrantDisbursementApprovalPayload): GrantDisbursementApproval => ({
   id: payload.id,
-  amount: parseNumber(payload.amount, 0),
-  date: ensureIsoString(payload.date) ?? new Date().toISOString(),
-  tranche: payload.tranche ?? undefined,
-  reference: payload.reference ?? undefined,
-  notes: payload.notes ?? undefined,
+  status: toStatus(payload.status, "pending"),
+  note: payload.note ?? undefined,
+  actorId: payload.actorId ?? undefined,
+  actorName: payload.actorName ?? undefined,
+  actorEmail: payload.actorEmail ?? undefined,
+  decidedAt: ensureIsoString(payload.decidedAt) ?? new Date().toISOString(),
 });
+
+const normaliseDisbursement = (payload: GrantDisbursementPayload): GrantDisbursement => {
+  const requestedAt = ensureIsoString(payload.requestedAt);
+  const targetReleaseDate = ensureIsoString(payload.targetReleaseDate);
+  const releasedAt = ensureIsoString(payload.releasedAt);
+  const date = ensureIsoString(payload.date) ?? releasedAt ?? targetReleaseDate ?? requestedAt ?? new Date().toISOString();
+  const status = toStatus(payload.status, releasedAt ? "released" : "pending");
+  const approvals = Array.isArray(payload.approvals)
+    ? payload.approvals.map(normaliseApproval)
+    : [];
+
+  return {
+    id: payload.id,
+    amount: parseNumber(payload.amount, 0),
+    date,
+    tranche: payload.tranche ?? undefined,
+    reference: payload.reference ?? undefined,
+    milestoneId: payload.milestoneId ?? undefined,
+    requestedBy: payload.requestedBy ?? undefined,
+    requestedAt: requestedAt ?? undefined,
+    targetReleaseDate: targetReleaseDate ?? undefined,
+    status,
+    approvals,
+    releasedAt: releasedAt ?? undefined,
+    notes: payload.notes ?? undefined,
+    metadata: (payload.metadata ?? undefined) as Record<string, unknown> | undefined,
+  };
+};
 
 const normaliseExpenditure = (payload: GrantExpenditurePayload): GrantExpenditure => ({
   id: payload.id,
@@ -152,6 +208,99 @@ const normaliseCatalog = (payload: GrantCatalogPayload | null | undefined): Gran
   };
 };
 
+const approvalToPayload = (approval: GrantDisbursementApproval): GrantDisbursementApprovalPayload => ({
+  id: approval.id,
+  status: approval.status,
+  note: approval.note,
+  actorId: approval.actorId,
+  actorName: approval.actorName,
+  actorEmail: approval.actorEmail,
+  decidedAt: approval.decidedAt,
+});
+
+const disbursementToPayload = (disbursement: GrantDisbursement): GrantDisbursementPayload => ({
+  id: disbursement.id,
+  amount: disbursement.amount,
+  date: disbursement.date,
+  tranche: disbursement.tranche,
+  reference: disbursement.reference,
+  milestoneId: disbursement.milestoneId,
+  requestedBy: disbursement.requestedBy,
+  requestedAt: disbursement.requestedAt,
+  targetReleaseDate: disbursement.targetReleaseDate,
+  status: disbursement.status,
+  approvals: disbursement.approvals.map(approvalToPayload),
+  releasedAt: disbursement.releasedAt,
+  notes: disbursement.notes,
+  metadata: disbursement.metadata ?? undefined,
+});
+
+const expenditureToPayload = (expenditure: GrantExpenditure): GrantExpenditurePayload => ({
+  id: expenditure.id,
+  category: expenditure.category,
+  description: expenditure.description,
+  amount: expenditure.amount,
+  date: expenditure.date,
+  vendor: expenditure.vendor,
+  invoiceNumber: expenditure.invoiceNumber,
+  supportingDocs: expenditure.supportingDocs,
+  complianceTags: expenditure.complianceTags,
+  capitalExpense: expenditure.capitalExpense,
+  metadata: expenditure.metadata ?? undefined,
+});
+
+const complianceToPayload = (compliance: GrantCompliance): GrantCompliancePayload => ({
+  id: compliance.id,
+  title: compliance.title,
+  description: compliance.description,
+  dueDate: compliance.dueDate,
+  completedAt: compliance.completedAt,
+  status: compliance.status,
+  owner: compliance.owner,
+  evidenceUrls: compliance.evidenceUrls,
+  metadata: compliance.metadata ?? undefined,
+});
+
+const grantToPayload = (grant: GrantRecord): GrantRecordPayload => ({
+  id: grant.id,
+  name: grant.name,
+  fundingAgency: grant.fundingAgency,
+  program: grant.program,
+  sanctionNumber: grant.sanctionNumber,
+  sanctionDate: grant.sanctionDate,
+  totalSanctionedAmount: grant.totalSanctionedAmount,
+  currency: grant.currency,
+  managingDepartment: grant.managingDepartment,
+  purpose: grant.purpose,
+  startDate: grant.startDate,
+  endDate: grant.endDate,
+  disbursements: grant.disbursements.map(disbursementToPayload),
+  expenditures: grant.expenditures.map(expenditureToPayload),
+  compliance: grant.compliance.map(complianceToPayload),
+  metadata: grant.metadata ?? undefined,
+});
+
+const catalogToPayload = (catalog: GrantCatalog): GrantCatalogPayload => ({
+  version: catalog.version,
+  updatedAt: catalog.updatedAt,
+  grants: catalog.grants.map(grantToPayload),
+});
+
+const saveGrantCatalogRecord = async (startupId: string, catalog: GrantCatalog) => {
+  const payload = catalogToPayload(catalog);
+  const payloadValue = payload as unknown as Prisma.InputJsonValue;
+  await prisma.onboardingGrantCatalogRecord.upsert({
+    where: { startupId },
+    create: {
+      startupId,
+      payload: payloadValue,
+    },
+    update: {
+      payload: payloadValue,
+    },
+  });
+};
+
 export const getGrantCatalog = async (startupId: string): Promise<GrantCatalogRecord> => {
   const record = await prisma.onboardingGrantCatalogRecord.findUnique({
     where: { startupId },
@@ -169,6 +318,147 @@ export const getGrantCatalog = async (startupId: string): Promise<GrantCatalogRe
     startupId,
     catalog: normaliseCatalog((record.payload as GrantCatalogPayload | null | undefined) ?? undefined),
     raw: record,
+  };
+};
+
+export const listGrantDisbursements = async (
+  startupId: string,
+): Promise<{ catalog: GrantCatalog; disbursements: FlattenedGrantDisbursement[] }> => {
+  const record = await getGrantCatalog(startupId);
+  const flattened: FlattenedGrantDisbursement[] = record.catalog.grants.flatMap((grant) =>
+    grant.disbursements.map((disbursement) => ({
+      startupId,
+      grantId: grant.id,
+      grantName: grant.name,
+      disbursement,
+    })),
+  );
+
+  return {
+    catalog: record.catalog,
+    disbursements: flattened,
+  };
+};
+
+export const requestGrantDisbursement = async (
+  startupId: string,
+  input: GrantDisbursementRequestInput,
+): Promise<FlattenedGrantDisbursement> => {
+  if (!Number.isFinite(input.amount) || input.amount <= 0) {
+    throw new Error("Disbursement amount must be greater than zero");
+  }
+
+  await ensureMilestoneExists(startupId, input.milestoneId);
+
+  const catalogRecord = await getGrantCatalog(startupId);
+  const grant = findGrantOrThrow(catalogRecord.catalog, input.grantId);
+
+  const now = new Date().toISOString();
+  const targetReleaseDate = ensureIsoString(input.targetReleaseDate);
+
+  const initialApproval: GrantDisbursementApproval = {
+    id: randomUUID(),
+    status: "pending",
+    note: input.notes ?? "Disbursement requested",
+    actorId: input.requestedBy.id,
+    actorName: input.requestedBy.name,
+    actorEmail: input.requestedBy.email,
+    decidedAt: now,
+  };
+
+  const disbursement: GrantDisbursement = {
+    id: randomUUID(),
+    amount: parseNumber(input.amount, 0),
+    date: targetReleaseDate ?? now,
+    tranche: input.tranche ?? undefined,
+    reference: input.reference ?? undefined,
+    milestoneId: input.milestoneId ?? undefined,
+    requestedBy: input.requestedBy.id,
+    requestedAt: now,
+    targetReleaseDate: targetReleaseDate ?? undefined,
+    status: "pending",
+    approvals: [initialApproval],
+    releasedAt: undefined,
+    notes: input.notes ?? undefined,
+    metadata: {
+      requestedByName: input.requestedBy.name,
+      requestedByEmail: input.requestedBy.email,
+    },
+  };
+
+  grant.disbursements.push(disbursement);
+  catalogRecord.catalog.updatedAt = now;
+
+  await saveGrantCatalogRecord(startupId, catalogRecord.catalog);
+
+  return {
+    startupId,
+    grantId: grant.id,
+    grantName: grant.name,
+    disbursement,
+  };
+};
+
+const ensureStatusTransition = (current: GrantDisbursementStatus, next: GrantDisbursementStatus) => {
+  if (current === "released" && next !== "released") {
+    throw new Error("Released disbursements cannot transition to a different status");
+  }
+};
+
+export const updateGrantDisbursementStatus = async (
+  startupId: string,
+  input: GrantDisbursementStatusUpdateInput,
+): Promise<FlattenedGrantDisbursement> => {
+  if (!isValidStatus(input.status)) {
+    throw new Error("Invalid disbursement status");
+  }
+
+  const catalogRecord = await getGrantCatalog(startupId);
+  const grant = findGrantOrThrow(catalogRecord.catalog, input.grantId);
+  const disbursement = grant.disbursements.find((item) => item.id === input.disbursementId);
+
+  if (!disbursement) {
+    throw new Error(`Disbursement ${input.disbursementId} not found on grant ${input.grantId}`);
+  }
+
+  ensureStatusTransition(disbursement.status, input.status);
+
+  const now = new Date().toISOString();
+  const decidedAt = ensureIsoString(input.releaseDate) ?? now;
+
+  disbursement.status = input.status;
+  disbursement.approvals = [
+    ...disbursement.approvals,
+    {
+      id: randomUUID(),
+      status: input.status,
+      note: input.note ?? undefined,
+      actorId: input.actor.id,
+      actorName: input.actor.name,
+      actorEmail: input.actor.email,
+      decidedAt,
+    },
+  ];
+
+  if (input.status === "released") {
+    const releaseTimestamp = ensureIsoString(input.releaseDate) ?? decidedAt;
+    disbursement.releasedAt = releaseTimestamp;
+    disbursement.date = releaseTimestamp ?? disbursement.date;
+    if (input.releaseReference) {
+      disbursement.reference = input.releaseReference;
+    }
+  } else if (input.status === "rejected") {
+    disbursement.releasedAt = undefined;
+  }
+
+  catalogRecord.catalog.updatedAt = now;
+  await saveGrantCatalogRecord(startupId, catalogRecord.catalog);
+
+  return {
+    startupId,
+    grantId: grant.id,
+    grantName: grant.name,
+    disbursement,
   };
 };
 
@@ -193,6 +483,20 @@ const findGrantOrThrow = (catalog: GrantCatalog, grantId: string): GrantRecord =
     throw new Error(`Grant with id ${grantId} not found`);
   }
   return grant;
+};
+
+const ensureMilestoneExists = async (startupId: string, milestoneId?: string) => {
+  if (!milestoneId) {
+    return;
+  }
+
+  const plan = await prisma.onboardingMilestonePlanRecord.findUnique({ where: { startupId } });
+  const payload = plan?.payload as { milestones?: Array<{ id: string }> } | null | undefined;
+  const hasMilestone = payload?.milestones?.some((item) => item.id === milestoneId) ?? false;
+
+  if (!hasMilestone) {
+    throw new Error(`Milestone ${milestoneId} not found for startup ${startupId}`);
+  }
 };
 
 const withinInclusive = (isoDate: string | undefined, start: string, end: string): boolean => {
@@ -245,23 +549,95 @@ const summariseCompliance = (items: GrantCompliance[]) => {
   );
 };
 
+const effectiveDisbursementDate = (disbursement: GrantDisbursement): string | undefined => {
+  return disbursement.releasedAt ?? disbursement.date;
+};
+
+const releasedDisbursements = (grant: GrantRecord): GrantDisbursement[] => {
+  return grant.disbursements.filter((item) => item.status === "released");
+};
+
+const summariseGrantFinancials = (startupId: string, grant: GrantRecord): GrantFinancialSummary => {
+  let totalReleased = 0;
+  let totalPending = 0;
+  let totalRejected = 0;
+  let pendingCount = 0;
+  let releasedCount = 0;
+  let upcomingTargetRelease: string | undefined;
+  let lastDisbursementAt: string | undefined;
+
+  grant.disbursements.forEach((disbursement) => {
+    const amount = disbursement.amount ?? 0;
+
+    if (disbursement.status === "released") {
+      totalReleased += amount;
+      releasedCount += 1;
+      const releasedAt = effectiveDisbursementDate(disbursement);
+      if (releasedAt && (!lastDisbursementAt || new Date(releasedAt).getTime() > new Date(lastDisbursementAt).getTime())) {
+        lastDisbursementAt = releasedAt;
+      }
+      return;
+    }
+
+    if (disbursement.status === "pending" || disbursement.status === "approved") {
+      totalPending += amount;
+      pendingCount += 1;
+      const targetDate = disbursement.targetReleaseDate ?? disbursement.date;
+      if (targetDate && (!upcomingTargetRelease || new Date(targetDate).getTime() < new Date(upcomingTargetRelease).getTime())) {
+        upcomingTargetRelease = targetDate;
+      }
+      return;
+    }
+
+    if (disbursement.status === "rejected") {
+      totalRejected += amount;
+    }
+  });
+
+  const totalUtilised = sumAmounts(grant.expenditures, (item) => item.amount);
+  const availableToUtilise = totalReleased - totalUtilised;
+  const remainingSanctionBalance = Math.max(grant.totalSanctionedAmount - (totalReleased + totalPending), 0);
+
+  return {
+    startupId,
+    grantId: grant.id,
+    grantName: grant.name,
+    currency: grant.currency,
+    totalSanctioned: grant.totalSanctionedAmount,
+    totalReleased,
+    totalPendingAmount: totalPending,
+    totalRejectedAmount: totalRejected,
+    totalUtilised,
+    availableToUtilise,
+    remainingSanctionBalance,
+    pendingDisbursementCount: pendingCount,
+    releasedDisbursementCount: releasedCount,
+    upcomingTargetRelease,
+    lastDisbursementAt,
+  };
+};
+
 export const generateGrantUtilizationCertificate = (
   catalog: GrantCatalog,
   request: GrantReportRequest,
 ): GrantUtilizationCertificate => {
   const { start, end } = assertPeriod(request.period);
   const grant = findGrantOrThrow(catalog, request.grantId);
+  const released = releasedDisbursements(grant);
 
   const totalDisbursedToDate = sumAmounts(
-    grant.disbursements.filter((item) => !item.date || new Date(item.date).getTime() <= new Date(end).getTime()),
+    released.filter((item) => {
+      const date = effectiveDisbursementDate(item);
+      return !date || new Date(date).getTime() <= new Date(end).getTime();
+    }),
     (item) => item.amount,
   );
   const disbursedBeforePeriod = sumAmounts(
-    grant.disbursements.filter((item) => before(item.date, start)),
+    released.filter((item) => before(effectiveDisbursementDate(item), start)),
     (item) => item.amount,
   );
   const disbursedDuringPeriod = sumAmounts(
-    grant.disbursements.filter((item) => withinInclusive(item.date, start, end)),
+    released.filter((item) => withinInclusive(effectiveDisbursementDate(item), start, end)),
     (item) => item.amount,
   );
 
@@ -491,5 +867,61 @@ export const generateGrantReports = (
   return {
     certificate: generateGrantUtilizationCertificate(catalog, request),
     complianceReport: generateGrantComplianceReport(catalog, request),
+  };
+};
+
+export const getIncubatorFinancialOverview = async (): Promise<IncubatorFinancialOverview> => {
+  const records = await prisma.onboardingGrantCatalogRecord.findMany();
+  const totalsByCurrency = new Map<string, CurrencyFinancialTotals>();
+  const grantSummaries: GrantFinancialSummary[] = [];
+  let latestUpdatedMs = 0;
+
+  records.forEach((record) => {
+    const catalog = normaliseCatalog((record.payload as GrantCatalogPayload | null | undefined) ?? undefined);
+    const recordUpdatedMs = record.updatedAt?.getTime() ?? 0;
+    if (recordUpdatedMs > latestUpdatedMs) {
+      latestUpdatedMs = recordUpdatedMs;
+    }
+
+    if (catalog.updatedAt) {
+      const catalogUpdatedMs = new Date(catalog.updatedAt).getTime();
+      if (!Number.isNaN(catalogUpdatedMs) && catalogUpdatedMs > latestUpdatedMs) {
+        latestUpdatedMs = catalogUpdatedMs;
+      }
+    }
+
+    catalog.grants.forEach((grant) => {
+      const summary = summariseGrantFinancials(record.startupId, grant);
+      grantSummaries.push(summary);
+
+      const existingTotals = totalsByCurrency.get(summary.currency);
+      const totals: CurrencyFinancialTotals = existingTotals
+        ?? {
+          currency: summary.currency,
+          totalSanctioned: 0,
+          totalReleased: 0,
+          totalPendingAmount: 0,
+          totalRejectedAmount: 0,
+          totalUtilised: 0,
+          availableToUtilise: 0,
+          remainingSanctionBalance: 0,
+        };
+
+      totals.totalSanctioned += summary.totalSanctioned;
+      totals.totalReleased += summary.totalReleased;
+      totals.totalPendingAmount += summary.totalPendingAmount;
+      totals.totalRejectedAmount += summary.totalRejectedAmount;
+      totals.totalUtilised += summary.totalUtilised;
+      totals.availableToUtilise += summary.availableToUtilise;
+      totals.remainingSanctionBalance += summary.remainingSanctionBalance;
+
+      totalsByCurrency.set(summary.currency, totals);
+    });
+  });
+
+  return {
+    totalsByCurrency: Array.from(totalsByCurrency.values()).sort((a, b) => a.currency.localeCompare(b.currency)),
+    grants: grantSummaries,
+    updatedAt: latestUpdatedMs > 0 ? new Date(latestUpdatedMs).toISOString() : undefined,
   };
 };

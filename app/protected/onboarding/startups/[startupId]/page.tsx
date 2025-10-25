@@ -228,6 +228,7 @@ export default function StartupWorkspacePage() {
   const [milestoneNoteDraft, setMilestoneNoteDraft] = useState<Record<string, string>>({});
   const [savingMilestones, setSavingMilestones] = useState(false);
   const [creatingMilestone, setCreatingMilestone] = useState(false);
+  const [deletingMilestoneId, setDeletingMilestoneId] = useState<string | null>(null);
   const [newMilestoneTitle, setNewMilestoneTitle] = useState("");
   const [newMilestoneOwner, setNewMilestoneOwner] = useState("");
   const [newMilestoneCategory, setNewMilestoneCategory] = useState("");
@@ -1345,6 +1346,43 @@ export default function StartupWorkspacePage() {
     }
   };
 
+  const handleDeleteMilestone = async (milestoneId: string, milestoneTitle: string) => {
+    if (!startupId) return;
+    const confirmed = window.confirm(
+      `Delete milestone "${milestoneTitle}"? This action cannot be undone.`,
+    );
+    if (!confirmed) {
+      return;
+    }
+
+    setDeletingMilestoneId(milestoneId);
+    try {
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/milestones`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ milestoneId }),
+      });
+
+      const payload = (await res.json()) as {
+        ok: boolean;
+        milestones?: OnboardingMilestonePlanSnapshot;
+        error?: string;
+      };
+
+      if (!res.ok || !payload.ok || !payload.milestones) {
+        throw new Error(payload?.error ?? "Unable to delete milestone");
+      }
+
+      setMilestones(payload.milestones);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete milestone");
+    } finally {
+      setDeletingMilestoneId(null);
+    }
+  };
+
   const refreshDocuments = () => {
     fetch(`/api/protected/onboarding/startups/${startupId}/documents`)
       .then(async (res) => {
@@ -1959,6 +1997,14 @@ export default function StartupWorkspacePage() {
                           Escalate
                         </button>
                       )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteMilestone(milestone.id, milestone.title)}
+                        disabled={deletingMilestoneId === milestone.id}
+                        className="rounded-full border border-red-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        {deletingMilestoneId === milestone.id ? "Deleting…" : "Delete"}
+                      </button>
                     </div>
                   </div>
                 </article>

@@ -4,6 +4,7 @@ import { auth } from "@/lib/auth/user";
 import {
   applyMilestoneUpdates,
   createOnboardingMilestone,
+  deleteOnboardingMilestone,
   getOnboardingMilestones,
 } from "@/lib/onboarding/service";
 import { OnboardingMilestoneUpdateInput } from "@/lib/onboarding/types";
@@ -112,5 +113,53 @@ export async function PUT(request: NextRequest, context: any) {
       { ok: false, error: "Unable to update milestone" },
       { status: 500 },
     );
+  }
+}
+
+export async function DELETE(request: NextRequest, context: any) {
+  try {
+    const session = await ensureAuthenticated();
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
+
+    let body: any = null;
+    try {
+      body = await request.json();
+    } catch (error) {
+      body = null;
+    }
+
+    const milestoneId = typeof body?.milestoneId === "string" ? body.milestoneId : undefined;
+    if (!milestoneId) {
+      return NextResponse.json({ ok: false, error: "Milestone id is required" }, { status: 400 });
+    }
+
+    const author =
+      body?.author
+        ?? body?.requestedBy
+        ?? body?.actor
+        ?? session.user?.name
+        ?? session.user?.email
+        ?? session.user?.id;
+    const plan = await deleteOnboardingMilestone(startupId, milestoneId, author);
+
+    return NextResponse.json({ ok: true, milestones: plan });
+  } catch (error) {
+    if ((error as Error).message === "unauthorized") {
+      return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+    }
+
+    const message = error instanceof Error ? error.message : "Unable to delete milestone";
+    const status = error instanceof Error &&
+      (message === "Milestone id is required" ||
+        message === "Milestone not found" ||
+        message.startsWith("Cannot delete milestone"))
+      ? 400
+      : 500;
+
+    console.error("DELETE /protected/onboarding/startups/[id]/milestones failed", error);
+    return NextResponse.json({ ok: false, error: message }, { status });
   }
 }

@@ -30,6 +30,20 @@ export default function ProtectedPage() {
 				href: "/protected/onboarding",
 				label: "Manage onboarding",
 			},
+			{
+				title: "Grant Financial Dashboard",
+				description:
+					"Track incubator-wide grant sanctions, disbursements, and utilisation health metrics.",
+				href: "/protected/grants/financials",
+				label: "View financials",
+			},
+			{
+				title: "Facilities & Resources",
+				description:
+					"Reserve meeting rooms, R&D labs, and specialised equipment with live availability.",
+				href: "/protected/facilities",
+				label: "Book facilities",
+			},
 		],
 		[],
 	);

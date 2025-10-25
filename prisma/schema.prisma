@@ -66,6 +66,47 @@ model OnboardingGrantCatalogRecord {
   @@schema("grants")
 }
 
+model FacilityResourceRecord {
+  id          String   @id @default(uuid())
+  type        String
+  name        String
+  location    String?
+  capacity    Int?
+  description String?
+  tags        Json?
+  availability Json?
+  metadata    Json?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  bookings FacilityBookingRecord[]
+
+  @@schema("facilities")
+  @@index([type, name])
+}
+
+model FacilityBookingRecord {
+  id             String   @id @default(uuid())
+  resourceId     String
+  resource       FacilityResourceRecord @relation(fields: [resourceId], references: [id])
+  title          String
+  description    String?
+  startTime      DateTime
+  endTime        DateTime
+  status         String   @default("confirmed")
+  createdBy      String
+  createdByName  String?
+  createdByEmail String?
+  participants   Json?
+  metadata       Json?
+  createdAt      DateTime @default(now())
+  updatedAt      DateTime @updatedAt
+
+  @@schema("facilities")
+  @@index([resourceId, startTime, endTime])
+  @@index([createdBy, startTime])
+}
+
 model OnboardingDocumentRecord {
   id         String   @id @default(uuid())
   startupId  String
