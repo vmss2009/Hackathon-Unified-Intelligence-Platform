@@ -1,5 +1,6 @@
 import { Buffer } from "node:buffer";
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
 import {
   listOnboardingDocuments,
@@ -8,20 +9,19 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type RouteContext = {
-  params: {
-    startupId: string;
-  };
-};
-
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(_request: NextRequest, context: any) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    const documents = await listOnboardingDocuments(context.params.startupId);
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
+
+    const documents = await listOnboardingDocuments(startupId);
     return NextResponse.json({ ok: true, documents });
   } catch (error) {
     console.error("GET /protected/onboarding/startups/[id]/documents failed", error);
@@ -32,10 +32,15 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 }
 
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(request: NextRequest, context: any) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  const startupId = context?.params?.startupId;
+  if (!startupId) {
+    return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
   }
 
   const formData = await request.formData();
@@ -48,7 +53,7 @@ export async function POST(request: Request, context: RouteContext) {
 
   try {
     const buffer = Buffer.from(await file.arrayBuffer());
-    const document = await uploadOnboardingDocument(context.params.startupId, {
+    const document = await uploadOnboardingDocument(startupId, {
       name: file.name,
       contentType: file.type || "application/octet-stream",
       buffer,

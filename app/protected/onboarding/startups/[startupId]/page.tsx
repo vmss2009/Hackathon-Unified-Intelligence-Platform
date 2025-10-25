@@ -2,6 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
+import { useParams, useSearchParams } from "next/navigation";
 import {
   OnboardingChecklist,
   OnboardingChecklistItem,
@@ -21,15 +22,6 @@ import {
   OnboardingMilestoneUpdateInput,
   OnboardingSubmissionSummary,
 } from "@/lib/onboarding/types";
-
-type PageProps = {
-  params: {
-    startupId: string;
-  };
-  searchParams: {
-    userId?: string;
-  };
-};
 
 type WorkspacePayload = {
   ok: boolean;
@@ -196,9 +188,27 @@ const createNewChecklistItem = (title: string, description?: string, dueDate?: s
   };
 };
 
-export default function StartupWorkspacePage({ params, searchParams }: PageProps) {
-  const { startupId } = params;
-  const userId = searchParams.userId;
+export default function StartupWorkspacePage() {
+  const routeParams = useParams();
+  const rawStartupId = routeParams?.startupId as string | string[] | undefined;
+  const startupId = Array.isArray(rawStartupId) ? rawStartupId[0] : rawStartupId;
+
+  const queryParams = useSearchParams();
+  const userId = queryParams?.get("userId") ?? undefined;
+
+  if (!startupId) {
+    return (
+      <main className="flex min-h-[60vh] flex-col items-center justify-center gap-4 p-8 text-center">
+        <p className="text-sm text-red-200">Missing startup reference. Please navigate via the submissions dashboard.</p>
+        <Link
+          href="/protected/onboarding/submissions"
+          className="rounded-full border border-blue-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:bg-blue-500/10"
+        >
+          Back to submissions
+        </Link>
+      </main>
+    );
+  }
 
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);

@@ -1,24 +1,24 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
 import { getOnboardingChecklist, saveOnboardingChecklist } from "@/lib/onboarding/service";
 import { OnboardingChecklist } from "@/lib/onboarding/types";
 
 export const dynamic = "force-dynamic";
 
-type RouteContext = {
-  params: {
-    startupId: string;
-  };
-};
-
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(_request: NextRequest, context: any) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    const checklist = await getOnboardingChecklist(context.params.startupId);
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
+
+    const checklist = await getOnboardingChecklist(startupId);
     return NextResponse.json({ ok: true, checklist });
   } catch (error) {
     console.error("GET /protected/onboarding/startups/[id]/checklist failed", error);
@@ -29,10 +29,15 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 }
 
-export async function PUT(request: Request, context: RouteContext) {
+export async function PUT(request: NextRequest, context: any) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  const startupId = context?.params?.startupId;
+  if (!startupId) {
+    return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
   }
 
   let payload: unknown;
@@ -54,8 +59,8 @@ export async function PUT(request: Request, context: RouteContext) {
   }
 
   try {
-    const updated = await saveOnboardingChecklist(context.params.startupId, {
-      startupId: context.params.startupId,
+    const updated = await saveOnboardingChecklist(startupId, {
+      startupId,
       createdAt: checklist?.createdAt ?? new Date().toISOString(),
       updatedAt: checklist?.updatedAt ?? new Date().toISOString(),
       notes: checklist?.notes,

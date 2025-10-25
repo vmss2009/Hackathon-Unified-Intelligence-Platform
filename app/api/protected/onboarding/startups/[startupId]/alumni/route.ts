@@ -1,4 +1,5 @@
-import { NextRequest, NextResponse } from "next/server";
+import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
 import {
   appendOnboardingAlumniTouchpoint,
@@ -23,11 +24,14 @@ const ensureAuthenticated = async () => {
 
 export async function GET(
   _request: NextRequest,
-  { params }: { params: { startupId: string } },
+  context: any,
 ) {
   try {
     await ensureAuthenticated();
-    const { startupId } = params;
+    const startupId = context.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const alumni = await getOnboardingAlumniRecord(startupId);
 
     return NextResponse.json({
@@ -48,11 +52,14 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  { params }: { params: { startupId: string } },
+  context: any,
 ) {
   try {
     await ensureAuthenticated();
-    const { startupId } = params;
+    const startupId = context.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const body = await request.json();
     const update = (body?.update ?? {}) as OnboardingAlumniUpdateInput;
 
@@ -76,11 +83,14 @@ export async function PUT(
 
 export async function POST(
   request: NextRequest,
-  { params }: { params: { startupId: string } },
+  context: any,
 ) {
   try {
     const session = await ensureAuthenticated();
-    const { startupId } = params;
+    const startupId = context.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const body = await request.json();
 
     const touchpointPayload = body?.touchpoint;

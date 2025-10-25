@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
 import {
   applyMilestoneUpdates,
@@ -9,12 +10,6 @@ import { OnboardingMilestoneUpdateInput } from "@/lib/onboarding/types";
 
 export const dynamic = "force-dynamic";
 
-type RouteContext = {
-  params: {
-    startupId: string;
-  };
-};
-
 const ensureAuthenticated = async () => {
   const session = await auth();
   if (!session?.user?.id) {
@@ -23,10 +18,13 @@ const ensureAuthenticated = async () => {
   return session;
 };
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(_request: NextRequest, context: any) {
   try {
     await ensureAuthenticated();
-    const { startupId } = context.params;
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const plan = await getOnboardingMilestones(startupId);
 
     return NextResponse.json({
@@ -45,10 +43,13 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 }
 
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(request: NextRequest, context: any) {
   try {
     const session = await ensureAuthenticated();
-    const { startupId } = context.params;
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const body = await request.json();
     const milestone = body?.milestone;
 
@@ -78,10 +79,13 @@ export async function POST(request: Request, context: RouteContext) {
   }
 }
 
-export async function PUT(request: Request, context: RouteContext) {
+export async function PUT(request: NextRequest, context: any) {
   try {
     const session = await ensureAuthenticated();
-    const { startupId } = context.params;
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const body = await request.json();
     const updates = Array.isArray(body?.updates) ? (body.updates as OnboardingMilestoneUpdateInput[]) : [];
 

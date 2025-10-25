@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
 import {
   getOnboardingChecklist,
@@ -12,19 +13,16 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type RouteContext = {
-  params: {
-    startupId: string;
-  };
-};
-
-export async function GET(request: Request, context: RouteContext) {
+export async function GET(request: NextRequest, context: any) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const { startupId } = context.params;
+  const startupId = context?.params?.startupId;
+  if (!startupId) {
+    return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+  }
   const url = new URL(request.url);
   const userId = url.searchParams.get("userId");
 

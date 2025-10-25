@@ -1,4 +1,5 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
 import {
   createOnboardingGrantOpportunity,
@@ -10,12 +11,6 @@ import { OnboardingGrantOpportunityInput } from "@/lib/onboarding/types";
 
 export const dynamic = "force-dynamic";
 
-type RouteContext = {
-  params: {
-    startupId: string;
-  };
-};
-
 const ensureAuthenticated = async () => {
   const session = await auth();
   if (!session?.user?.id) {
@@ -24,10 +19,13 @@ const ensureAuthenticated = async () => {
   return session;
 };
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(_request: NextRequest, context: any) {
   try {
     await ensureAuthenticated();
-    const { startupId } = context.params;
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const grants = await getOnboardingGrantCatalog(startupId);
 
     return NextResponse.json({ ok: true, grants });
@@ -43,10 +41,13 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 }
 
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(request: NextRequest, context: any) {
   try {
     await ensureAuthenticated();
-    const { startupId } = context.params;
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const body = await request.json();
     const opportunity = body?.opportunity as OnboardingGrantOpportunityInput | undefined;
 
@@ -69,10 +70,13 @@ export async function POST(request: Request, context: RouteContext) {
   }
 }
 
-export async function PUT(request: Request, context: RouteContext) {
+export async function PUT(request: NextRequest, context: any) {
   try {
     await ensureAuthenticated();
-    const { startupId } = context.params;
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const body = await request.json();
     const opportunity = body?.opportunity as OnboardingGrantOpportunityInput | undefined;
 
@@ -95,10 +99,13 @@ export async function PUT(request: Request, context: RouteContext) {
   }
 }
 
-export async function DELETE(request: Request, context: RouteContext) {
+export async function DELETE(request: NextRequest, context: any) {
   try {
     await ensureAuthenticated();
-    const { startupId } = context.params;
+    const startupId = context?.params?.startupId;
+    if (!startupId) {
+      return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
+    }
     const body = await request.json();
     const id = body?.opportunityId as string | undefined;
 
