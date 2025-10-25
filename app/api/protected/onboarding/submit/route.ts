@@ -1,0 +1,56 @@
+import { NextResponse } from "next/server";
+import { auth } from "@/lib/auth/user";
+import { enrichAttachment, saveOnboardingSubmission } from "@/lib/onboarding/service";
+import { OnboardingFieldResponse } from "@/lib/onboarding/types";
+
+export const dynamic = "force-dynamic";
+
+type SubmissionPayload = {
+  formId: string;
+  responses: OnboardingFieldResponse[];
+};
+
+export async function POST(request: Request) {
+  const session = await auth();
+
+  if (!session?.user?.id) {
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  let payload: SubmissionPayload;
+
+  try {
+    payload = (await request.json()) as SubmissionPayload;
+  } catch (error) {
+    return NextResponse.json({ ok: false, error: "Invalid JSON payload" }, { status: 400 });
+  }
+
+  if (!payload.formId) {
+    return NextResponse.json({ ok: false, error: "Form ID missing" }, { status: 400 });
+  }
+
+  if (!Array.isArray(payload.responses)) {
+    return NextResponse.json({ ok: false, error: "Responses missing" }, { status: 400 });
+  }
+
+  try {
+    const enrichedResponses = payload.responses.map((response) => ({
+      ...response,
+      attachments: response.attachments?.map(enrichAttachment),
+    }));
+
+    const record = await saveOnboardingSubmission({
+      userId: session.user.id,
+      formId: payload.formId,
+      responses: enrichedResponses,
+    });
+
+    return NextResponse.json({ ok: true, submission: record });
+  } catch (error) {
+    console.error("POST /onboarding/submit failed", error);
+    return NextResponse.json(
+      { ok: false, error: "Unable to save onboarding submission" },
+      { status: 500 },
+    );
+  }
+}
