@@ -1,4 +1,4 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
 import { auth } from "@/lib/auth/user";
 import {
   appendOnboardingAlumniTouchpoint,
@@ -13,12 +13,6 @@ import {
 
 export const dynamic = "force-dynamic";
 
-type RouteContext = {
-  params: {
-    startupId: string;
-  };
-};
-
 const ensureAuthenticated = async () => {
   const session = await auth();
   if (!session?.user?.id) {
@@ -27,10 +21,13 @@ const ensureAuthenticated = async () => {
   return session;
 };
 
-export async function GET(_request: Request, context: RouteContext) {
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: { startupId: string } },
+) {
   try {
     await ensureAuthenticated();
-    const { startupId } = context.params;
+    const { startupId } = params;
     const alumni = await getOnboardingAlumniRecord(startupId);
 
     return NextResponse.json({
@@ -49,10 +46,13 @@ export async function GET(_request: Request, context: RouteContext) {
   }
 }
 
-export async function PUT(request: Request, context: RouteContext) {
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: { startupId: string } },
+) {
   try {
     await ensureAuthenticated();
-    const { startupId } = context.params;
+    const { startupId } = params;
     const body = await request.json();
     const update = (body?.update ?? {}) as OnboardingAlumniUpdateInput;
 
@@ -74,10 +74,13 @@ export async function PUT(request: Request, context: RouteContext) {
   }
 }
 
-export async function POST(request: Request, context: RouteContext) {
+export async function POST(
+  request: NextRequest,
+  { params }: { params: { startupId: string } },
+) {
   try {
     const session = await ensureAuthenticated();
-    const { startupId } = context.params;
+    const { startupId } = params;
     const body = await request.json();
 
     const touchpointPayload = body?.touchpoint;
