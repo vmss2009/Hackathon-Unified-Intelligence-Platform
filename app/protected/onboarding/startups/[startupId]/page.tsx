@@ -7,6 +7,9 @@ import {
   OnboardingChecklistItem,
   OnboardingChecklistStatus,
   OnboardingDocument,
+  OnboardingMilestonePlanSnapshot,
+  OnboardingMilestoneStatus,
+  OnboardingMilestoneUpdateInput,
   OnboardingSubmissionSummary,
 } from "@/lib/onboarding/types";
 
@@ -24,6 +27,7 @@ type WorkspacePayload = {
   submission: OnboardingSubmissionSummary;
   checklist: OnboardingChecklist;
   documents: OnboardingDocument[];
+  milestones: OnboardingMilestonePlanSnapshot;
   error?: string;
 };
 
@@ -44,6 +48,22 @@ const STATUS_OPTIONS: { value: OnboardingChecklistStatus; label: string }[] = [
   { value: "in_progress", label: "In progress" },
   { value: "complete", label: "Complete" },
 ];
+
+const MILESTONE_STATUS_OPTIONS: { value: OnboardingMilestoneStatus; label: string }[] = [
+  { value: "planned", label: "Planned" },
+  { value: "on_track", label: "On track" },
+  { value: "at_risk", label: "At risk" },
+  { value: "off_track", label: "Off track" },
+  { value: "completed", label: "Completed" },
+];
+
+const MILESTONE_BADGE_STYLES: Record<OnboardingMilestoneStatus, string> = {
+  planned: "border-slate-700 bg-slate-900/70 text-slate-200",
+  on_track: "border-emerald-500/60 bg-emerald-500/10 text-emerald-200",
+  at_risk: "border-amber-500/60 bg-amber-500/10 text-amber-200",
+  off_track: "border-red-500/60 bg-red-500/10 text-red-200",
+  completed: "border-blue-500/60 bg-blue-500/10 text-blue-200",
+};
 
 const formatDate = (value?: string) => {
   if (!value) return "—";
@@ -98,12 +118,54 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
   const [newItemDueDate, setNewItemDueDate] = useState("");
   const [newItemDescription, setNewItemDescription] = useState("");
   const [notesDraft, setNotesDraft] = useState("");
+  const [milestones, setMilestones] = useState<OnboardingMilestonePlanSnapshot | null>(null);
+  const [milestoneProgressDraft, setMilestoneProgressDraft] = useState<Record<string, number>>({});
+  const [milestoneStatusDraft, setMilestoneStatusDraft] = useState<Record<string, OnboardingMilestoneStatus>>({});
+  const [milestoneCurrentValueDraft, setMilestoneCurrentValueDraft] = useState<Record<string, string>>({});
+  const [milestoneNoteDraft, setMilestoneNoteDraft] = useState<Record<string, string>>({});
+  const [savingMilestones, setSavingMilestones] = useState(false);
+  const [creatingMilestone, setCreatingMilestone] = useState(false);
+  const [newMilestoneTitle, setNewMilestoneTitle] = useState("");
+  const [newMilestoneOwner, setNewMilestoneOwner] = useState("");
+  const [newMilestoneCategory, setNewMilestoneCategory] = useState("");
+  const [newMilestoneDueDate, setNewMilestoneDueDate] = useState("");
+  const [newMilestoneTarget, setNewMilestoneTarget] = useState("");
+  const [newMilestoneUnit, setNewMilestoneUnit] = useState("");
+  const [newMilestoneReminderLead, setNewMilestoneReminderLead] = useState("2");
+  const [newMilestoneReminderCadence, setNewMilestoneReminderCadence] = useState("7");
+  const [newMilestoneEscalationAfter, setNewMilestoneEscalationAfter] = useState("3");
+  const [newMilestoneEscalateTo, setNewMilestoneEscalateTo] = useState("");
 
   useEffect(() => {
     if (checklist) {
       setNotesDraft(checklist.notes ?? "");
     }
   }, [checklist?.notes]);
+
+  useEffect(() => {
+    if (!milestones) {
+      return;
+    }
+    const progressMap: Record<string, number> = {};
+    const statusMap: Record<string, OnboardingMilestoneStatus> = {};
+    const valueMap: Record<string, string> = {};
+    const noteMap: Record<string, string> = {};
+
+    milestones.milestones.forEach((milestone) => {
+      progressMap[milestone.id] = milestone.progress;
+      statusMap[milestone.id] = milestone.status;
+      valueMap[milestone.id] =
+        milestone.currentValue !== undefined && milestone.currentValue !== null
+          ? String(milestone.currentValue)
+          : "";
+      noteMap[milestone.id] = "";
+    });
+
+    setMilestoneProgressDraft(progressMap);
+    setMilestoneStatusDraft(statusMap);
+    setMilestoneCurrentValueDraft(valueMap);
+    setMilestoneNoteDraft(noteMap);
+  }, [milestones]);
 
   useEffect(() => {
     if (!userId) {
@@ -135,6 +197,7 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
         setSubmission(payload.submission);
         setChecklist(payload.checklist);
         setDocuments(payload.documents);
+        setMilestones(payload.milestones);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -158,6 +221,58 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
     const percentage = submission.score.percentage ?? (total > 0 ? Number(((awarded / total) * 100).toFixed(1)) : 0);
     return { awarded, total, percentage };
   }, [submission]);
+
+  const milestoneSummary = useMemo(() => {
+    if (!milestones) {
+      return { total: 0, dueSoon: 0, overdue: 0, needsReminder: 0, needsEscalation: 0 };
+    }
+    const stats = {
+      total: milestones.milestones.length,
+      dueSoon: 0,
+      overdue: 0,
+      needsReminder: 0,
+      needsEscalation: 0,
+    };
+
+    milestones.milestones.forEach((milestone) => {
+      const { signals } = milestone;
+      if (signals.needsReminder) {
+        stats.needsReminder += 1;
+      }
+      if (signals.needsEscalation) {
+        stats.needsEscalation += 1;
+      }
+      if (signals.overdueByDays !== undefined && signals.overdueByDays >= 1) {
+        stats.overdue += 1;
+      } else if (
+        signals.dueInDays !== undefined &&
+        signals.dueInDays >= 0 &&
+        signals.dueInDays <= 3
+      ) {
+        stats.dueSoon += 1;
+      }
+    });
+
+    return stats;
+  }, [milestones]);
+
+  const milestoneNameMap = useMemo(() => {
+    if (!milestones) {
+      return new Map<string, string>();
+    }
+    return new Map<string, string>(
+      milestones.milestones.map((milestone) => [milestone.id, milestone.title]),
+    );
+  }, [milestones]);
+
+  const parseNumberInput = (value: string): number | undefined => {
+    const trimmed = value.trim();
+    if (!trimmed.length) {
+      return undefined;
+    }
+    const parsed = Number(trimmed);
+    return Number.isFinite(parsed) ? parsed : undefined;
+  };
 
   const handleChecklistChange = async (items: OnboardingChecklistItem[], notes?: string) => {
     if (!checklist) return;
@@ -239,6 +354,188 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
     setNewItemTitle("");
     setNewItemDescription("");
     setNewItemDueDate("");
+  };
+
+  const refreshMilestonesPlan = () => {
+    fetch(`/api/protected/onboarding/startups/${startupId}/milestones`)
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error("Failed to refresh milestones");
+        }
+        const payload = (await res.json()) as {
+          ok: boolean;
+          milestones: OnboardingMilestonePlanSnapshot;
+          error?: string;
+        };
+        if (!payload.ok) {
+          throw new Error(payload.error ?? "Unable to refresh milestones");
+        }
+        setMilestones(payload.milestones);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Unable to refresh milestones");
+      });
+  };
+
+  const handleMilestoneUpdate = async (updates: OnboardingMilestoneUpdateInput[]) => {
+    if (!updates.length) {
+      return;
+    }
+    setSavingMilestones(true);
+    try {
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/milestones`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ updates }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to update milestones");
+      }
+
+      const payload = (await res.json()) as {
+        ok: boolean;
+        milestones: OnboardingMilestonePlanSnapshot;
+        error?: string;
+      };
+
+      if (!payload.ok) {
+        throw new Error(payload.error ?? "Unable to update milestones");
+      }
+
+      setMilestones(payload.milestones);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update milestones");
+    } finally {
+      setSavingMilestones(false);
+    }
+  };
+
+  const handleSaveMilestone = (milestoneId: string) => {
+    const milestoneRecord = milestones?.milestones.find((item) => item.id === milestoneId);
+    const progressValue =
+      milestoneProgressDraft[milestoneId] ?? milestoneRecord?.progress ?? 0;
+    const statusValue =
+      milestoneStatusDraft[milestoneId] ?? milestoneRecord?.status;
+
+    const updates: OnboardingMilestoneUpdateInput = {
+      id: milestoneId,
+      progress: progressValue,
+    };
+
+    if (statusValue) {
+      updates.status = statusValue;
+    }
+
+    const currentValue = parseNumberInput(
+      milestoneCurrentValueDraft[milestoneId] ??
+        (milestoneRecord?.currentValue !== undefined ? String(milestoneRecord.currentValue) : ""),
+    );
+    if (currentValue !== undefined) {
+      updates.currentValue = currentValue;
+    }
+
+    const note = milestoneNoteDraft[milestoneId]?.trim();
+    if (note) {
+      updates.note = note;
+    }
+
+    handleMilestoneUpdate([updates]);
+    if (note) {
+      setMilestoneNoteDraft((prev) => ({ ...prev, [milestoneId]: "" }));
+    }
+  };
+
+  const handleSendMilestoneReminder = (milestoneId: string) => {
+    const note = milestoneNoteDraft[milestoneId]?.trim();
+    handleMilestoneUpdate([
+      {
+        id: milestoneId,
+        markReminderSent: true,
+        note,
+      },
+    ]);
+    if (note) {
+      setMilestoneNoteDraft((prev) => ({ ...prev, [milestoneId]: "" }));
+    }
+  };
+
+  const handleEscalateMilestone = (milestoneId: string) => {
+    const note = milestoneNoteDraft[milestoneId]?.trim();
+    handleMilestoneUpdate([
+      {
+        id: milestoneId,
+        markEscalated: true,
+        note,
+      },
+    ]);
+    if (note) {
+      setMilestoneNoteDraft((prev) => ({ ...prev, [milestoneId]: "" }));
+    }
+  };
+
+  const handleCreateMilestone = async () => {
+    if (!newMilestoneTitle.trim()) {
+      return;
+    }
+
+    setCreatingMilestone(true);
+    try {
+      const body = {
+        milestone: {
+          title: newMilestoneTitle.trim(),
+          owner: newMilestoneOwner.trim() || undefined,
+          category: newMilestoneCategory.trim() || undefined,
+          dueDate: newMilestoneDueDate || undefined,
+          unit: newMilestoneUnit.trim() || undefined,
+          targetValue: parseNumberInput(newMilestoneTarget),
+          reminderLeadDays: parseNumberInput(newMilestoneReminderLead) ?? 2,
+          reminderCadenceDays: parseNumberInput(newMilestoneReminderCadence) ?? 7,
+          escalationAfterDays: parseNumberInput(newMilestoneEscalationAfter) ?? 3,
+          escalateTo: newMilestoneEscalateTo.trim() || undefined,
+        },
+      };
+
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/milestones`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(body),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to create milestone");
+      }
+
+      const payload = (await res.json()) as {
+        ok: boolean;
+        milestones: OnboardingMilestonePlanSnapshot;
+        error?: string;
+      };
+
+      if (!payload.ok) {
+        throw new Error(payload.error ?? "Unable to create milestone");
+      }
+
+      setMilestones(payload.milestones);
+      setNewMilestoneTitle("");
+      setNewMilestoneOwner("");
+      setNewMilestoneCategory("");
+      setNewMilestoneDueDate("");
+      setNewMilestoneTarget("");
+      setNewMilestoneUnit("");
+      setNewMilestoneReminderLead("2");
+      setNewMilestoneReminderCadence("7");
+      setNewMilestoneEscalationAfter("3");
+      setNewMilestoneEscalateTo("");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create milestone");
+    } finally {
+      setCreatingMilestone(false);
+    }
   };
 
   const refreshDocuments = () => {
@@ -338,7 +635,7 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
     );
   }
 
-  if (!submission || !checklist) {
+  if (!submission || !checklist || !milestones) {
     return null;
   }
 
@@ -614,6 +911,395 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
             )}
           </div>
         </div>
+      </section>
+
+      <section className="space-y-6 rounded-2xl border border-slate-800/70 bg-slate-950/60 p-6">
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-slate-100">Milestones & KPI tracking</h2>
+            <p className="text-sm text-slate-400">
+              Monitor milestone delivery, capture KPI progress, and trigger automated reminders with
+              escalation when commitments slip.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={refreshMilestonesPlan}
+              className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70"
+            >
+              Refresh
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-5">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total milestones</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-100">{milestoneSummary.total}</p>
+          </div>
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-amber-300">Due soon (≤3d)</p>
+            <p className="mt-2 text-2xl font-semibold text-amber-100">{milestoneSummary.dueSoon}</p>
+          </div>
+          <div className="rounded-xl border border-red-500/40 bg-red-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-red-300">Overdue</p>
+            <p className="mt-2 text-2xl font-semibold text-red-100">{milestoneSummary.overdue}</p>
+          </div>
+          <div className="rounded-xl border border-blue-500/40 bg-blue-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-200">Needs reminder</p>
+            <p className="mt-2 text-2xl font-semibold text-blue-100">{milestoneSummary.needsReminder}</p>
+          </div>
+          <div className="rounded-xl border border-purple-500/40 bg-purple-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-purple-200">Needs escalation</p>
+            <p className="mt-2 text-2xl font-semibold text-purple-100">{milestoneSummary.needsEscalation}</p>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          {milestones.milestones.length === 0 ? (
+            <div className="rounded-xl border border-dashed border-slate-800/60 bg-slate-950/40 p-6 text-sm text-slate-300">
+              No milestones defined yet. Use the form below to schedule key deliverables and KPI checkpoints for this startup.
+            </div>
+          ) : (
+            milestones.milestones.map((milestone) => {
+              const statusDraft = (milestoneStatusDraft[milestone.id] ?? milestone.status) as OnboardingMilestoneStatus;
+              const progressDraft = Math.max(
+                0,
+                Math.min(100, milestoneProgressDraft[milestone.id] ?? milestone.progress),
+              );
+              const currentValueDraft = milestoneCurrentValueDraft[milestone.id] ?? "";
+              const noteDraft = milestoneNoteDraft[milestone.id] ?? "";
+              const { signals } = milestone;
+              const effectiveStatus = statusDraft;
+              const statusBadgeClass =
+                MILESTONE_BADGE_STYLES[effectiveStatus] ?? MILESTONE_BADGE_STYLES.planned;
+              const dueLabel = milestone.dueDate ? formatDate(milestone.dueDate) : "No due date";
+              const nextReminderLabel = signals.nextReminderAt ? formatDateTime(signals.nextReminderAt) : "—";
+              const needsReminder = signals.needsReminder && effectiveStatus !== "completed";
+              const needsEscalation = signals.needsEscalation && effectiveStatus !== "completed";
+
+              return (
+                <article
+                  key={milestone.id}
+                  className="space-y-4 rounded-2xl border border-slate-800/80 bg-slate-950/60 p-5 shadow-inner shadow-blue-900/10"
+                >
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="space-y-2">
+                      <div className="flex flex-wrap items-center gap-3">
+                        <h3 className="text-xl font-semibold text-slate-100">{milestone.title}</h3>
+                        <span
+                          className={`rounded-full border px-3 py-1 text-[11px] font-semibold uppercase tracking-wide ${statusBadgeClass}`}
+                        >
+                          {MILESTONE_STATUS_OPTIONS.find((option) => option.value === statusDraft)?.label ?? statusDraft}
+                        </span>
+                      </div>
+                      {milestone.description && (
+                        <p className="text-sm text-slate-300">{milestone.description}</p>
+                      )}
+                      <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                        {milestone.owner && (
+                          <span className="rounded-full border border-slate-800 px-3 py-1">
+                            Owner {milestone.owner}
+                          </span>
+                        )}
+                        <span className="rounded-full border border-slate-800 px-3 py-1">{dueLabel}</span>
+                        {milestone.targetValue !== undefined && (
+                          <span className="rounded-full border border-slate-800 px-3 py-1">
+                            Target {milestone.targetValue}
+                            {milestone.unit ? ` ${milestone.unit}` : ""}
+                          </span>
+                        )}
+                        {milestone.escalateTo && (
+                          <span className="rounded-full border border-slate-800 px-3 py-1 text-purple-200">
+                            Escalates to {milestone.escalateTo}
+                          </span>
+                        )}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+                      <label className="flex items-center gap-2">
+                        <span>Status</span>
+                        <select
+                          value={statusDraft}
+                          onChange={(event) =>
+                            setMilestoneStatusDraft((prev) => ({
+                              ...prev,
+                              [milestone.id]: event.target.value as OnboardingMilestoneStatus,
+                            }))
+                          }
+                          className="rounded-md border border-slate-700 bg-slate-950 px-2 py-1 text-xs text-slate-100 focus:border-blue-500 focus:outline-none"
+                        >
+                          {MILESTONE_STATUS_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      <button
+                        type="button"
+                        onClick={() => handleSaveMilestone(milestone.id)}
+                        disabled={savingMilestones}
+                        className="rounded-full border border-blue-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {savingMilestones ? "Saving…" : "Save update"}
+                      </button>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-4 md:grid-cols-3">
+                    <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Progress (%)
+                      <input
+                        type="number"
+                        min={0}
+                        max={100}
+                        value={progressDraft}
+                        onChange={(event) =>
+                          setMilestoneProgressDraft((prev) => ({
+                            ...prev,
+                            [milestone.id]: (() => {
+                              const parsed = Number(event.target.value);
+                              if (Number.isNaN(parsed)) {
+                                return 0;
+                              }
+                              return Math.max(0, Math.min(100, parsed));
+                            })(),
+                          }))
+                        }
+                        className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+                      />
+                      <div className="h-2 w-full overflow-hidden rounded-full bg-slate-800">
+                        <div
+                          className="h-full rounded-full bg-gradient-to-r from-purple-500 via-blue-500 to-emerald-500"
+                          style={{ width: `${progressDraft}%` }}
+                        />
+                      </div>
+                    </label>
+
+                    <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                      Current value{milestone.unit ? ` (${milestone.unit})` : ""}
+                      <input
+                        value={currentValueDraft}
+                        onChange={(event) =>
+                          setMilestoneCurrentValueDraft((prev) => ({
+                            ...prev,
+                            [milestone.id]: event.target.value,
+                          }))
+                        }
+                        placeholder="e.g. 15000"
+                        className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                      />
+                    </label>
+
+                    <div className="space-y-2 rounded-lg border border-slate-800/80 bg-slate-950/40 p-3 text-xs text-slate-300">
+                      <p className="font-semibold text-slate-200">Automation signals</p>
+                      <p>
+                        Reminder:
+                        {needsReminder ? (
+                          <span className="ml-2 text-blue-200">Send now (next window {nextReminderLabel})</span>
+                        ) : (
+                          <span className="ml-2 text-slate-400">Next {nextReminderLabel}</span>
+                        )}
+                      </p>
+                      <p>
+                        Escalation:
+                        {needsEscalation ? (
+                          <span className="ml-2 text-purple-200">Ready to escalate</span>
+                        ) : (
+                          <span className="ml-2 text-slate-400">{milestone.escalateTo ? "Not yet" : "No target"}</span>
+                        )}
+                      </p>
+                      {signals.summary && <p className="text-slate-400">{signals.summary}</p>}
+                    </div>
+                  </div>
+
+                  <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                    <label className="flex w-full flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400 md:max-w-xl">
+                      Internal note
+                      <textarea
+                        value={noteDraft}
+                        onChange={(event) =>
+                          setMilestoneNoteDraft((prev) => ({
+                            ...prev,
+                            [milestone.id]: event.target.value,
+                          }))
+                        }
+                        rows={3}
+                        placeholder="Log blocker, context, or reminder copy"
+                        className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                      />
+                    </label>
+                    <div className="flex flex-wrap items-center gap-3">
+                      <button
+                        type="button"
+                        onClick={() => handleSendMilestoneReminder(milestone.id)}
+                        disabled={savingMilestones || !needsReminder}
+                        className="rounded-full border border-blue-400/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-blue-100 transition hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                      >
+                        Send reminder
+                      </button>
+                      {milestone.escalateTo && (
+                        <button
+                          type="button"
+                          onClick={() => handleEscalateMilestone(milestone.id)}
+                          disabled={savingMilestones || !needsEscalation}
+                          className="rounded-full border border-purple-400/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-purple-100 transition hover:bg-purple-500/10 disabled:cursor-not-allowed disabled:opacity-50"
+                        >
+                          Escalate
+                        </button>
+                      )}
+                    </div>
+                  </div>
+                </article>
+              );
+            })
+          )}
+        </div>
+
+        <div className="space-y-3 rounded-xl border border-dashed border-slate-800/60 bg-slate-950/40 p-5">
+          <h3 className="text-sm font-semibold text-slate-100">Add milestone</h3>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Title
+              <input
+                value={newMilestoneTitle}
+                onChange={(event) => setNewMilestoneTitle(event.target.value)}
+                placeholder="e.g. Close pilot customer cohort"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Owner (optional)
+              <input
+                value={newMilestoneOwner}
+                onChange={(event) => setNewMilestoneOwner(event.target.value)}
+                placeholder="e.g. CEO, Program Ops"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Category (optional)
+              <input
+                value={newMilestoneCategory}
+                onChange={(event) => setNewMilestoneCategory(event.target.value)}
+                placeholder="e.g. KPI, Product, Fundraising"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Due date (optional)
+              <input
+                type="date"
+                value={newMilestoneDueDate}
+                onChange={(event) => setNewMilestoneDueDate(event.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Target value (optional)
+              <input
+                value={newMilestoneTarget}
+                onChange={(event) => setNewMilestoneTarget(event.target.value)}
+                placeholder="e.g. 20000"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Unit (optional)
+              <input
+                value={newMilestoneUnit}
+                onChange={(event) => setNewMilestoneUnit(event.target.value)}
+                placeholder="e.g. USD, MAU"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Reminder lead (days)
+              <input
+                type="number"
+                min={0}
+                value={newMilestoneReminderLead}
+                onChange={(event) => setNewMilestoneReminderLead(event.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Reminder cadence (days)
+              <input
+                type="number"
+                min={1}
+                value={newMilestoneReminderCadence}
+                onChange={(event) => setNewMilestoneReminderCadence(event.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Escalate after (days overdue)
+              <input
+                type="number"
+                min={1}
+                value={newMilestoneEscalationAfter}
+                onChange={(event) => setNewMilestoneEscalationAfter(event.target.value)}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400 md:col-span-2">
+              Escalate to (email/Slack)
+              <input
+                value={newMilestoneEscalateTo}
+                onChange={(event) => setNewMilestoneEscalateTo(event.target.value)}
+                placeholder="ops@incubator.local or #ops-escalations"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+
+          <button
+            type="button"
+            onClick={handleCreateMilestone}
+            disabled={creatingMilestone || !newMilestoneTitle.trim()}
+            className="rounded-full border border-emerald-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-emerald-200 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {creatingMilestone ? "Creating…" : "Add milestone"}
+          </button>
+        </div>
+
+        {milestones.logs.length > 0 && (
+          <div className="space-y-3 rounded-xl border border-slate-800/80 bg-slate-950/40 p-5">
+            <h3 className="text-sm font-semibold text-slate-100">Recent activity</h3>
+            <ul className="space-y-2 text-xs text-slate-300">
+              {milestones.logs.slice(0, 6).map((log) => (
+                <li key={log.id} className="flex flex-wrap items-center gap-2">
+                  <span className="text-slate-500">{formatDateTime(log.timestamp)}</span>
+                  <span className="text-slate-600">•</span>
+                  <span className="font-semibold text-slate-200">
+                    {milestoneNameMap.get(log.milestoneId) ?? "Milestone"}
+                  </span>
+                  {log.progress !== undefined && (
+                    <span className="text-slate-400">progress → {log.progress}%</span>
+                  )}
+                  {log.status && (
+                    <span className="text-slate-400">
+                      status →
+                      {" "}
+                      {MILESTONE_STATUS_OPTIONS.find((option) => option.value === log.status)?.label ?? log.status}
+                    </span>
+                  )}
+                  {log.currentValue !== undefined && (
+                    <span className="text-slate-400">value → {log.currentValue}</span>
+                  )}
+                  {log.note && <span className="text-slate-300">“{log.note}”</span>}
+                  {log.author && <span className="text-slate-500">({log.author})</span>}
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
       </section>
 
       <section className="space-y-4 rounded-2xl border border-slate-800/70 bg-slate-950/60 p-6">

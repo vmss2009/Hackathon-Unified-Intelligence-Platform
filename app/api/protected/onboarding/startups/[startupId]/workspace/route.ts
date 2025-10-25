@@ -4,6 +4,7 @@ import {
   getOnboardingChecklist,
   getOnboardingConfig,
   getOnboardingSubmissionDetail,
+  getOnboardingMilestones,
   listOnboardingDocuments,
 } from "@/lib/onboarding/service";
 
@@ -40,9 +41,10 @@ export async function GET(request: Request, context: RouteContext) {
       );
     }
 
-    const [checklist, documents] = await Promise.all([
+    const [checklist, documents, milestones] = await Promise.all([
       getOnboardingChecklist(startupId),
       listOnboardingDocuments(startupId),
+      getOnboardingMilestones(startupId),
     ]);
 
     return NextResponse.json({
@@ -50,6 +52,7 @@ export async function GET(request: Request, context: RouteContext) {
       submission,
       checklist,
       documents,
+      milestones,
     });
   } catch (error) {
     console.error("GET /protected/onboarding/startups/[id]/workspace failed", error);

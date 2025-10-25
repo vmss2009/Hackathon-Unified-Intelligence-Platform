@@ -154,3 +154,90 @@ export type OnboardingDocument = {
   uploadedAt: string;
   uploadedBy?: string;
 };
+
+export type OnboardingMilestoneStatus =
+  | "planned"
+  | "on_track"
+  | "at_risk"
+  | "off_track"
+  | "completed";
+
+export type OnboardingMilestone = {
+  id: string;
+  startupId: string;
+  title: string;
+  description?: string;
+  owner?: string;
+  category?: string;
+  kpiKey?: string;
+  unit?: string;
+  baselineValue?: number;
+  currentValue?: number;
+  targetValue?: number;
+  dueDate?: string;
+  reminderLeadDays?: number;
+  reminderCadenceDays?: number;
+  escalationAfterDays?: number;
+  escalateTo?: string;
+  lastReminderAt?: string;
+  lastEscalationAt?: string;
+  status: OnboardingMilestoneStatus;
+  progress: number;
+  createdAt: string;
+  updatedAt: string;
+  completedAt?: string;
+  notes?: string;
+};
+
+export type OnboardingMilestoneLog = {
+  id: string;
+  milestoneId: string;
+  timestamp: string;
+  author?: string;
+  note?: string;
+  progress?: number;
+  status?: OnboardingMilestoneStatus;
+  currentValue?: number;
+};
+
+export type OnboardingMilestoneSignals = {
+  needsReminder: boolean;
+  needsEscalation: boolean;
+  dueInDays?: number;
+  overdueByDays?: number;
+  nextReminderAt?: string;
+  escalationTarget?: string;
+  isOverdue: boolean;
+  summary?: string;
+};
+
+export type OnboardingMilestonePlan = {
+  startupId: string;
+  updatedAt: string;
+  milestones: OnboardingMilestone[];
+  logs: OnboardingMilestoneLog[];
+};
+
+export type OnboardingMilestonePlanSnapshot = {
+  startupId: string;
+  updatedAt: string;
+  milestones: Array<OnboardingMilestone & { signals: OnboardingMilestoneSignals }>;
+  logs: OnboardingMilestoneLog[];
+};
+
+export type OnboardingMilestoneUpdateInput = {
+  id: string;
+  status?: OnboardingMilestoneStatus;
+  progress?: number;
+  currentValue?: number;
+  targetValue?: number;
+  dueDate?: string;
+  owner?: string;
+  reminderLeadDays?: number;
+  reminderCadenceDays?: number;
+  escalationAfterDays?: number;
+  escalateTo?: string;
+  note?: string;
+  markReminderSent?: boolean;
+  markEscalated?: boolean;
+};

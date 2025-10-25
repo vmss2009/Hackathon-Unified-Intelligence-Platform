@@ -24,12 +24,19 @@ import {
   OnboardingSubmissionFilters,
   OnboardingSubmissionResolvedField,
   OnboardingSubmissionSummary,
+  OnboardingMilestone,
+  OnboardingMilestonePlan,
+  OnboardingMilestonePlanSnapshot,
+  OnboardingMilestoneSignals,
+  OnboardingMilestoneUpdateInput,
+  OnboardingMilestoneLog,
 } from "./types";
 
 const CONFIG_KEY = "config.json";
 const SUBMISSION_PREFIX = "submissions/";
 const CHECKLIST_PREFIX = "checklists/";
 const DOCUMENTS_PREFIX = "documents/";
+const MILESTONES_PREFIX = "milestones/";
 
 const getBucketName = () => {
   const bucket = process.env.S3_ONBOARDING_BUCKET;
@@ -954,6 +961,569 @@ export const saveOnboardingChecklist = async (
   );
 
   return normalized;
+};
+
+const MILLISECONDS_IN_DAY = 24 * 60 * 60 * 1000;
+
+const ensureMilestoneStatus = (
+  status: string | undefined,
+): OnboardingMilestone["status"] => {
+  switch (status) {
+    case "on_track":
+    case "at_risk":
+    case "off_track":
+    case "completed":
+      return status;
+    default:
+      return "planned";
+  }
+};
+
+const clampProgress = (value: unknown): number => {
+  const numeric = ensureNumber(value);
+  if (numeric === undefined) {
+    return 0;
+  }
+  const bounded = Math.max(0, Math.min(100, numeric));
+  return Number(Number.parseFloat(bounded.toFixed(1)));
+};
+
+const normalizeMilestoneLog = (
+  log: Partial<OnboardingMilestoneLog>,
+  fallbackMilestoneId?: string,
+): OnboardingMilestoneLog | null => {
+  const milestoneId = log.milestoneId ?? fallbackMilestoneId;
+  if (!milestoneId) {
+    return null;
+  }
+
+  const timestamp = log.timestamp ?? new Date().toISOString();
+  const progress =
+    log.progress !== undefined ? clampProgress(log.progress) : undefined;
+  const currentValue =
+    log.currentValue !== undefined ? ensureNumber(log.currentValue) : undefined;
+
+  return {
+    id: log.id ?? randomUUID(),
+    milestoneId,
+    timestamp,
+    author: log.author?.trim() || undefined,
+    note: log.note?.trim() || undefined,
+    progress,
+    status: log.status ? ensureMilestoneStatus(log.status) : undefined,
+    currentValue,
+  };
+};
+
+const normalizeMilestone = (
+  startupId: string,
+  milestone: Partial<OnboardingMilestone>,
+): OnboardingMilestone => {
+  const now = new Date().toISOString();
+  const progress = clampProgress(milestone.progress ?? 0);
+  const status = ensureMilestoneStatus(milestone.status);
+  const completed = status === "completed" || progress >= 100;
+
+  const baselineValue =
+    milestone.baselineValue !== undefined
+      ? ensureNumber(milestone.baselineValue)
+      : undefined;
+  const currentValue =
+    milestone.currentValue !== undefined
+      ? ensureNumber(milestone.currentValue)
+      : undefined;
+  const targetValue =
+    milestone.targetValue !== undefined
+      ? ensureNumber(milestone.targetValue)
+      : undefined;
+
+  const reminderLeadDays =
+    milestone.reminderLeadDays !== undefined
+      ? Math.max(0, Math.round(milestone.reminderLeadDays))
+      : 2;
+  const reminderCadenceDays =
+    milestone.reminderCadenceDays !== undefined
+      ? Math.max(1, Math.round(milestone.reminderCadenceDays))
+      : 7;
+  const escalationAfterDays =
+    milestone.escalationAfterDays !== undefined
+      ? Math.max(1, Math.round(milestone.escalationAfterDays))
+      : 3;
+
+  const createdAt = milestone.createdAt ?? now;
+  const updatedAt = milestone.updatedAt ?? now;
+
+  let completedAt = milestone.completedAt;
+  if (completed && !completedAt) {
+    completedAt = now;
+  }
+  if (!completed && completedAt) {
+    completedAt = undefined;
+  }
+
+  return {
+    id: milestone.id ?? randomUUID(),
+    startupId,
+    title: milestone.title?.trim() || "Milestone",
+    description: milestone.description?.trim() || undefined,
+    owner: milestone.owner?.trim() || undefined,
+    category: milestone.category?.trim() || undefined,
+    kpiKey: milestone.kpiKey?.trim() || undefined,
+    unit: milestone.unit?.trim() || undefined,
+    baselineValue,
+    currentValue,
+    targetValue,
+    dueDate: milestone.dueDate ?? undefined,
+    reminderLeadDays,
+    reminderCadenceDays,
+    escalationAfterDays,
+    escalateTo: milestone.escalateTo?.trim() || undefined,
+    lastReminderAt: milestone.lastReminderAt ?? undefined,
+    lastEscalationAt: milestone.lastEscalationAt ?? undefined,
+    status: completed ? "completed" : status,
+    progress: completed ? 100 : progress,
+    createdAt,
+    updatedAt,
+    completedAt,
+    notes: milestone.notes?.trim() || undefined,
+  };
+};
+
+type RawMilestonePlan = Partial<Omit<OnboardingMilestonePlan, "milestones" | "logs">> & {
+  milestones?: Array<Partial<OnboardingMilestone>>;
+  logs?: Array<Partial<OnboardingMilestoneLog>>;
+};
+
+const normalizeMilestonePlan = (
+  startupId: string,
+  plan?: RawMilestonePlan,
+): OnboardingMilestonePlan => {
+  const milestones = (plan?.milestones ?? [])
+    .map((milestone) => normalizeMilestone(startupId, milestone))
+    .reduce<OnboardingMilestone[]>((acc, milestone) => {
+      if (acc.find((entry) => entry.id === milestone.id)) {
+        return acc;
+      }
+      acc.push(milestone);
+      return acc;
+    }, [])
+    .sort((a, b) => {
+      const aDue = a.dueDate ? new Date(a.dueDate).getTime() : Number.POSITIVE_INFINITY;
+      const bDue = b.dueDate ? new Date(b.dueDate).getTime() : Number.POSITIVE_INFINITY;
+      return aDue - bDue;
+    });
+
+  const rawLogs = plan?.logs ?? [];
+  const logs = rawLogs
+    .map((log) => normalizeMilestoneLog(log, log.milestoneId || milestones[0]?.id))
+    .filter((entry): entry is OnboardingMilestoneLog => Boolean(entry))
+    .filter((entry) => milestones.some((milestone) => milestone.id === entry.milestoneId))
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  return {
+    startupId,
+    updatedAt: plan?.updatedAt ?? new Date().toISOString(),
+    milestones,
+    logs,
+  };
+};
+
+const milestoneTemplate = (startupId: string): OnboardingMilestonePlan => {
+  const now = new Date();
+  const iso = (days: number) => new Date(now.getTime() + days * MILLISECONDS_IN_DAY).toISOString();
+  const items: Partial<OnboardingMilestone>[] = [
+    {
+      title: "Finalize incubation agreement",
+      description:
+        "Ensure legal review is complete and the participation agreement is signed by all founders.",
+      owner: "Program Ops",
+      category: "Compliance",
+      dueDate: iso(5),
+      status: "planned",
+      reminderLeadDays: 2,
+      reminderCadenceDays: 5,
+      escalationAfterDays: 2,
+      escalateTo: "ops@incubator.local",
+    },
+    {
+      title: "Baseline core KPIs",
+      description:
+        "Collect current revenue, retention, and usage metrics to track acceleration impact.",
+      owner: "Founders",
+      category: "KPI",
+      dueDate: iso(10),
+      status: "planned",
+      reminderLeadDays: 3,
+      reminderCadenceDays: 7,
+      escalationAfterDays: 4,
+      escalateTo: "program-manager@incubator.local",
+    },
+    {
+      title: "Schedule first mentor sync",
+      description:
+        "Introduce assigned mentors and align on the first 30-day execution roadmap.",
+      owner: "Mentor Lead",
+      category: "Engagement",
+      dueDate: iso(14),
+      status: "planned",
+      reminderLeadDays: 3,
+      reminderCadenceDays: 7,
+      escalationAfterDays: 3,
+      escalateTo: "mentor-lead@incubator.local",
+    },
+  ];
+
+  return normalizeMilestonePlan(startupId, {
+    startupId,
+    updatedAt: now.toISOString(),
+    milestones: items,
+    logs: [],
+  });
+};
+
+const computeMilestoneSignals = (
+  milestone: OnboardingMilestone,
+): OnboardingMilestoneSignals => {
+  const now = Date.now();
+  let dueInDays: number | undefined;
+  let overdueByDays: number | undefined;
+  let isOverdue = false;
+
+  if (milestone.dueDate) {
+    const dueTime = new Date(milestone.dueDate).getTime();
+    if (!Number.isNaN(dueTime)) {
+      const diffDays = (dueTime - now) / MILLISECONDS_IN_DAY;
+      if (diffDays >= 0) {
+        dueInDays = Math.floor(diffDays);
+      } else {
+        overdueByDays = Math.abs(Math.floor(diffDays));
+        isOverdue = overdueByDays > 0;
+      }
+    }
+  }
+
+  const cadenceDays = milestone.reminderCadenceDays ?? 7;
+  const leadDays = milestone.reminderLeadDays ?? 2;
+  const escalationAfter = milestone.escalationAfterDays ?? 3;
+
+  const lastReminderAt = milestone.lastReminderAt
+    ? new Date(milestone.lastReminderAt).getTime()
+    : undefined;
+  const lastEscalationAt = milestone.lastEscalationAt
+    ? new Date(milestone.lastEscalationAt).getTime()
+    : undefined;
+
+  let needsReminder = false;
+  if (milestone.status !== "completed") {
+    if (overdueByDays !== undefined) {
+      if (!lastReminderAt || now - lastReminderAt >= cadenceDays * MILLISECONDS_IN_DAY) {
+        needsReminder = true;
+      }
+    } else if (dueInDays !== undefined && dueInDays <= leadDays) {
+      if (!lastReminderAt || now - lastReminderAt >= leadDays * MILLISECONDS_IN_DAY) {
+        needsReminder = true;
+      }
+    } else if (!milestone.dueDate && !lastReminderAt) {
+      needsReminder = true;
+    }
+  }
+
+  const nextReminderAt = milestone.status === "completed"
+    ? undefined
+    : lastReminderAt
+    ? new Date(lastReminderAt + cadenceDays * MILLISECONDS_IN_DAY).toISOString()
+    : milestone.dueDate
+    ? new Date(new Date(milestone.dueDate).getTime() - leadDays * MILLISECONDS_IN_DAY).toISOString()
+    : undefined;
+
+  let needsEscalation = false;
+  if (
+    milestone.status !== "completed" &&
+    overdueByDays !== undefined &&
+    overdueByDays >= escalationAfter &&
+    milestone.escalateTo
+  ) {
+    if (!lastEscalationAt || now - lastEscalationAt >= escalationAfter * MILLISECONDS_IN_DAY) {
+      needsEscalation = true;
+    }
+  }
+
+  const summaryParts: string[] = [];
+  if (dueInDays !== undefined) {
+    summaryParts.push(`Due in ${dueInDays} day${dueInDays === 1 ? "" : "s"}`);
+  }
+  if (overdueByDays !== undefined) {
+    summaryParts.push(`Overdue by ${overdueByDays} day${overdueByDays === 1 ? "" : "s"}`);
+  }
+  summaryParts.push(`${milestone.progress}% complete`);
+
+  return {
+    needsReminder,
+    needsEscalation,
+    dueInDays,
+    overdueByDays,
+    nextReminderAt,
+    escalationTarget: milestone.escalateTo,
+    isOverdue,
+    summary: summaryParts.filter(Boolean).join(" · ") || undefined,
+  };
+};
+
+const buildMilestoneSnapshot = (
+  plan: OnboardingMilestonePlan,
+): OnboardingMilestonePlanSnapshot => ({
+  startupId: plan.startupId,
+  updatedAt: plan.updatedAt,
+  milestones: plan.milestones.map((milestone) => ({
+    ...milestone,
+    signals: computeMilestoneSignals(milestone),
+  })),
+  logs: plan.logs,
+});
+
+const getMilestonePlanInternal = async (
+  startupId: string,
+): Promise<OnboardingMilestonePlan> => {
+  const bucket = getBucketName();
+  const key = `${MILESTONES_PREFIX}${startupId}.json`;
+
+  try {
+    const response = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      }),
+    );
+    const raw = await streamToString(response.Body);
+    if (!raw) {
+      return milestoneTemplate(startupId);
+    }
+
+    const parsed = JSON.parse(raw) as OnboardingMilestonePlan;
+    return normalizeMilestonePlan(startupId, parsed);
+  } catch (error: any) {
+    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
+      return milestoneTemplate(startupId);
+    }
+    console.error("Failed to load onboarding milestones", error);
+    throw new Error("Unable to load milestone plan");
+  }
+};
+
+const saveMilestonePlan = async (
+  startupId: string,
+  plan: OnboardingMilestonePlan,
+): Promise<OnboardingMilestonePlan> => {
+  const bucket = getBucketName();
+  const normalized = normalizeMilestonePlan(startupId, plan);
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: `${MILESTONES_PREFIX}${startupId}.json`,
+      Body: toBuffer(normalized),
+      ContentType: "application/json",
+    }),
+  );
+
+  return normalized;
+};
+
+export const getOnboardingMilestones = async (
+  startupId: string,
+): Promise<OnboardingMilestonePlanSnapshot> => {
+  const plan = await getMilestonePlanInternal(startupId);
+  return buildMilestoneSnapshot(plan);
+};
+
+export const createOnboardingMilestone = async (
+  startupId: string,
+  milestone: Partial<OnboardingMilestone>,
+  author?: string,
+): Promise<OnboardingMilestonePlanSnapshot> => {
+  const plan = await getMilestonePlanInternal(startupId);
+  const now = new Date().toISOString();
+  const normalized = normalizeMilestone(startupId, {
+    ...milestone,
+    createdAt: now,
+    updatedAt: now,
+  });
+
+  plan.milestones.push(normalized);
+  plan.updatedAt = now;
+
+  const creationLog = normalizeMilestoneLog(
+    {
+      milestoneId: normalized.id,
+      timestamp: now,
+      author,
+      note: "Milestone created",
+      status: normalized.status,
+      progress: normalized.progress,
+    },
+    normalized.id,
+  );
+
+  if (creationLog) {
+    plan.logs.unshift(creationLog);
+  }
+
+  const stored = await saveMilestonePlan(startupId, plan);
+  return buildMilestoneSnapshot(stored);
+};
+
+export const applyMilestoneUpdates = async (
+  startupId: string,
+  updates: OnboardingMilestoneUpdateInput[],
+  author?: string,
+): Promise<OnboardingMilestonePlanSnapshot> => {
+  if (!updates.length) {
+    return getOnboardingMilestones(startupId);
+  }
+
+  const plan = await getMilestonePlanInternal(startupId);
+  const now = new Date();
+  const nowIso = now.toISOString();
+  let mutated = false;
+
+  updates.forEach((update) => {
+    const milestone = plan.milestones.find((entry) => entry.id === update.id);
+    if (!milestone) {
+      return;
+    }
+
+    let changed = false;
+    const log: Partial<OnboardingMilestoneLog> = {
+      milestoneId: milestone.id,
+      timestamp: nowIso,
+      author,
+    };
+
+    if (update.progress !== undefined) {
+      const progress = clampProgress(update.progress);
+      if (progress !== milestone.progress) {
+        milestone.progress = progress;
+        log.progress = progress;
+        changed = true;
+      }
+    }
+
+    if (update.currentValue !== undefined) {
+      const currentValue = ensureNumber(update.currentValue);
+      if (currentValue !== undefined && currentValue !== milestone.currentValue) {
+        milestone.currentValue = currentValue;
+        log.currentValue = currentValue;
+        changed = true;
+      }
+    }
+
+    if (update.targetValue !== undefined) {
+      const targetValue = ensureNumber(update.targetValue);
+      if (targetValue !== undefined && targetValue !== milestone.targetValue) {
+        milestone.targetValue = targetValue;
+        changed = true;
+      }
+    }
+
+    if (update.dueDate !== undefined) {
+      const dueDate = update.dueDate || undefined;
+      if (dueDate !== milestone.dueDate) {
+        milestone.dueDate = dueDate;
+        changed = true;
+      }
+    }
+
+    if (update.owner !== undefined) {
+      const owner = update.owner?.trim() || undefined;
+      if (owner !== milestone.owner) {
+        milestone.owner = owner;
+        changed = true;
+      }
+    }
+
+    if (update.reminderLeadDays !== undefined) {
+      const value = Math.max(0, Math.round(update.reminderLeadDays));
+      if (value !== milestone.reminderLeadDays) {
+        milestone.reminderLeadDays = value;
+        changed = true;
+      }
+    }
+
+    if (update.reminderCadenceDays !== undefined) {
+      const value = Math.max(1, Math.round(update.reminderCadenceDays));
+      if (value !== milestone.reminderCadenceDays) {
+        milestone.reminderCadenceDays = value;
+        changed = true;
+      }
+    }
+
+    if (update.escalationAfterDays !== undefined) {
+      const value = Math.max(1, Math.round(update.escalationAfterDays));
+      if (value !== milestone.escalationAfterDays) {
+        milestone.escalationAfterDays = value;
+        changed = true;
+      }
+    }
+
+    if (update.escalateTo !== undefined) {
+      const target = update.escalateTo?.trim() || undefined;
+      if (target !== milestone.escalateTo) {
+        milestone.escalateTo = target;
+        changed = true;
+      }
+    }
+
+    if (update.status !== undefined) {
+      const status = ensureMilestoneStatus(update.status);
+      if (status !== milestone.status) {
+        milestone.status = status;
+        log.status = status;
+        changed = true;
+      }
+    }
+
+    if (update.note?.trim()) {
+      log.note = update.note.trim();
+      milestone.notes = log.note;
+    }
+
+    if (update.markReminderSent) {
+      milestone.lastReminderAt = nowIso;
+      changed = true;
+    }
+
+    if (update.markEscalated) {
+      milestone.lastEscalationAt = nowIso;
+      changed = true;
+    }
+
+    const completed = milestone.status === "completed" || milestone.progress >= 100;
+    if (completed) {
+      milestone.status = "completed";
+      milestone.progress = 100;
+      milestone.completedAt = milestone.completedAt ?? nowIso;
+    } else if (milestone.completedAt) {
+      milestone.completedAt = undefined;
+    }
+
+    if (changed || log.note) {
+      milestone.updatedAt = nowIso;
+      plan.logs.unshift(normalizeMilestoneLog(log, milestone.id)!);
+      mutated = true;
+    }
+  });
+
+  if (!mutated) {
+    return buildMilestoneSnapshot(plan);
+  }
+
+  plan.updatedAt = nowIso;
+  plan.logs = plan.logs
+    .filter((log, index, array) => index === array.findIndex((entry) => entry.id === log.id))
+    .sort((a, b) => new Date(b.timestamp).getTime() - new Date(a.timestamp).getTime());
+
+  const stored = await saveMilestonePlan(startupId, plan);
+  return buildMilestoneSnapshot(stored);
 };
 
 const buildDocumentFromMetadata = (
