@@ -2251,6 +2251,16 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
             </label>
           </div>
           <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Description (optional)
+            <textarea
+              value={grantForm.description}
+              onChange={(event) => setGrantForm((prev) => ({ ...prev, description: event.target.value }))}
+              rows={4}
+              placeholder="Short overview or reviewer context"
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
             Eligibility (one per line)
             <textarea
               value={grantEligibilityDraft}
