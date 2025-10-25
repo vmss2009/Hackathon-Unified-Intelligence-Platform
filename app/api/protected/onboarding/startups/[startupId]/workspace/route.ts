@@ -5,7 +5,9 @@ import {
   getOnboardingConfig,
   getOnboardingSubmissionDetail,
   getOnboardingMilestones,
+  getOnboardingAlumniRecord,
   listOnboardingDocuments,
+  getOnboardingGrantCatalog,
 } from "@/lib/onboarding/service";
 
 export const dynamic = "force-dynamic";
@@ -41,10 +43,12 @@ export async function GET(request: Request, context: RouteContext) {
       );
     }
 
-    const [checklist, documents, milestones] = await Promise.all([
+    const [checklist, documents, milestones, alumni, grants] = await Promise.all([
       getOnboardingChecklist(startupId),
       listOnboardingDocuments(startupId),
       getOnboardingMilestones(startupId),
+      getOnboardingAlumniRecord(startupId),
+      getOnboardingGrantCatalog(startupId),
     ]);
 
     return NextResponse.json({
@@ -53,6 +57,8 @@ export async function GET(request: Request, context: RouteContext) {
       checklist,
       documents,
       milestones,
+      alumni,
+      grants,
     });
   } catch (error) {
     console.error("GET /protected/onboarding/startups/[id]/workspace failed", error);

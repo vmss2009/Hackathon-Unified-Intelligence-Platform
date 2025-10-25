@@ -241,3 +241,214 @@ export type OnboardingMilestoneUpdateInput = {
   markReminderSent?: boolean;
   markEscalated?: boolean;
 };
+
+export type OnboardingGraduationStatus =
+  | "in_program"
+  | "graduated"
+  | "deferred"
+  | "withdrawn"
+  | "alumni";
+
+export type OnboardingAlumniTouchpointChannel =
+  | "email"
+  | "call"
+  | "meeting"
+  | "event"
+  | "demo"
+  | "survey"
+  | "other";
+
+export type OnboardingAlumniTouchpointSentiment = "positive" | "neutral" | "negative";
+
+export type OnboardingAlumniMetric = {
+  id: string;
+  key: string;
+  label: string;
+  value: number;
+  unit?: string;
+  recordedAt: string;
+  note?: string;
+};
+
+export type OnboardingAlumniTouchpoint = {
+  id: string;
+  recordedAt: string;
+  recordedBy?: string;
+  channel?: OnboardingAlumniTouchpointChannel;
+  highlight?: string;
+  sentiment?: OnboardingAlumniTouchpointSentiment;
+  notes?: string;
+  nextActionAt?: string;
+  nextActionOwner?: string;
+};
+
+export type OnboardingAlumniRecord = {
+  startupId: string;
+  status: OnboardingGraduationStatus;
+  cohort?: string;
+  programStartAt?: string;
+  graduationDate?: string;
+  alumniSince?: string;
+  primaryMentor?: string;
+  supportOwner?: string;
+  tags?: string[];
+  notes?: string;
+  impactScore?: number;
+  fundingRaised?: number;
+  revenueRunRate?: number;
+  jobsCreated?: number;
+  currency?: string;
+  lastContactAt?: string;
+  nextCheckInAt?: string;
+  createdAt: string;
+  updatedAt: string;
+  metrics: OnboardingAlumniMetric[];
+  touchpoints: OnboardingAlumniTouchpoint[];
+};
+
+export type OnboardingAlumniSignals = {
+  hasGraduated: boolean;
+  monthsSinceGraduation?: number;
+  needsCheckIn: boolean;
+  checkInDueInDays?: number;
+  checkInOverdueByDays?: number;
+  lastTouchpointAt?: string;
+  touchpointCount: number;
+  totalFundingRaised?: number;
+  jobsCreated?: number;
+  revenueRunRate?: number;
+};
+
+export type OnboardingAlumniSnapshot = OnboardingAlumniRecord & {
+  signals: OnboardingAlumniSignals;
+};
+
+export type OnboardingAlumniMetricInput = {
+  id?: string;
+  key: string;
+  label: string;
+  value: number;
+  unit?: string;
+  recordedAt?: string;
+  note?: string;
+};
+
+export type OnboardingAlumniTouchpointInput = {
+  recordedAt?: string;
+  recordedBy?: string;
+  channel?: OnboardingAlumniTouchpointChannel;
+  highlight?: string;
+  sentiment?: OnboardingAlumniTouchpointSentiment;
+  notes?: string;
+  nextActionAt?: string;
+  nextActionOwner?: string;
+};
+
+export type OnboardingAlumniUpdateInput = {
+  status?: OnboardingGraduationStatus;
+  cohort?: string;
+  programStartAt?: string;
+  graduationDate?: string;
+  alumniSince?: string;
+  primaryMentor?: string;
+  supportOwner?: string;
+  tags?: string[];
+  notes?: string;
+  impactScore?: number | null;
+  fundingRaised?: number | null;
+  revenueRunRate?: number | null;
+  jobsCreated?: number | null;
+  currency?: string;
+  nextCheckInAt?: string;
+  metrics?: OnboardingAlumniMetricInput[];
+};
+
+export type OnboardingGrantStatus =
+  | "researching"
+  | "preparing"
+  | "submitted"
+  | "awarded"
+  | "closed";
+
+export type OnboardingGrantEligibility = {
+  id: string;
+  label: string;
+  met: boolean;
+  notes?: string;
+};
+
+export type OnboardingGrantEligibilityInput = {
+  id?: string;
+  label: string;
+  met?: boolean;
+  notes?: string;
+};
+
+export type OnboardingGrantOpportunity = {
+  id: string;
+  title: string;
+  provider?: string;
+  description?: string;
+  amount?: number;
+  currency?: string;
+  deadline?: string;
+  status: OnboardingGrantStatus;
+  link?: string;
+  owner?: string;
+  notes?: string;
+  eligibility: OnboardingGrantEligibility[];
+  createdAt: string;
+  updatedAt: string;
+  lastActivityAt?: string;
+};
+
+export type OnboardingGrantOpportunitySignals = {
+  hasDeadline: boolean;
+  daysUntilDeadline?: number;
+  isOverdue: boolean;
+  isSubmitted: boolean;
+  eligibilityComplete: boolean;
+  unmetEligibilityCount: number;
+};
+
+export type OnboardingGrantOpportunitySnapshot = OnboardingGrantOpportunity & {
+  signals: OnboardingGrantOpportunitySignals;
+};
+
+export type OnboardingGrantCatalog = {
+  startupId: string;
+  createdAt: string;
+  updatedAt: string;
+  opportunities: OnboardingGrantOpportunity[];
+};
+
+export type OnboardingGrantCatalogSignals = {
+  total: number;
+  dueSoon: number;
+  overdue: number;
+  awarded: number;
+  submitted: number;
+};
+
+export type OnboardingGrantCatalogSnapshot = {
+  startupId: string;
+  createdAt: string;
+  updatedAt: string;
+  opportunities: OnboardingGrantOpportunitySnapshot[];
+  signals: OnboardingGrantCatalogSignals;
+};
+
+export type OnboardingGrantOpportunityInput = {
+  id?: string;
+  title?: string;
+  provider?: string;
+  description?: string;
+  amount?: number | null;
+  currency?: string;
+  deadline?: string;
+  status?: OnboardingGrantStatus;
+  link?: string;
+  owner?: string;
+  notes?: string;
+  eligibility?: OnboardingGrantEligibilityInput[];
+};

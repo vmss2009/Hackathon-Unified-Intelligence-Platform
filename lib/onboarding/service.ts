@@ -30,6 +30,24 @@ import {
   OnboardingMilestoneSignals,
   OnboardingMilestoneUpdateInput,
   OnboardingMilestoneLog,
+  OnboardingAlumniMetric,
+  OnboardingAlumniRecord,
+  OnboardingAlumniSnapshot,
+  OnboardingAlumniSignals,
+  OnboardingAlumniUpdateInput,
+  OnboardingAlumniMetricInput,
+  OnboardingAlumniTouchpoint,
+  OnboardingAlumniTouchpointInput,
+  OnboardingGraduationStatus,
+  OnboardingGrantCatalog,
+  OnboardingGrantCatalogSnapshot,
+  OnboardingGrantCatalogSignals,
+  OnboardingGrantEligibility,
+  OnboardingGrantEligibilityInput,
+  OnboardingGrantOpportunity,
+  OnboardingGrantOpportunityInput,
+  OnboardingGrantOpportunitySignals,
+  OnboardingGrantOpportunitySnapshot,
 } from "./types";
 
 const CONFIG_KEY = "config.json";
@@ -37,6 +55,8 @@ const SUBMISSION_PREFIX = "submissions/";
 const CHECKLIST_PREFIX = "checklists/";
 const DOCUMENTS_PREFIX = "documents/";
 const MILESTONES_PREFIX = "milestones/";
+const ALUMNI_PREFIX = "alumni/";
+const GRANTS_PREFIX = "grants/";
 
 const getBucketName = () => {
   const bucket = process.env.S3_ONBOARDING_BUCKET;
@@ -1524,6 +1544,1028 @@ export const applyMilestoneUpdates = async (
 
   const stored = await saveMilestonePlan(startupId, plan);
   return buildMilestoneSnapshot(stored);
+};
+
+const CHECKIN_SOON_WINDOW_DAYS = 7;
+const DEFAULT_CHECKIN_GAP_DAYS = 60;
+
+const clampImpactScore = (value: unknown): number | undefined => {
+  const numeric = ensureNumber(value);
+  if (numeric === undefined) {
+    return undefined;
+  }
+  const bounded = Math.max(0, Math.min(100, numeric));
+  return Number(Number.parseFloat(bounded.toFixed(1)));
+};
+
+const sanitizeTag = (tag: string | undefined): string | undefined => {
+  if (!tag) {
+    return undefined;
+  }
+  const cleaned = tag.trim();
+  if (!cleaned.length) {
+    return undefined;
+  }
+  return cleaned.substring(0, 60);
+};
+
+const normalizeIsoDate = (value?: string): string | undefined => {
+  if (!value) {
+    return undefined;
+  }
+  const time = new Date(value).getTime();
+  if (Number.isNaN(time)) {
+    return undefined;
+  }
+  return new Date(time).toISOString();
+};
+
+const ensureGraduationStatus = (
+  status: string | undefined,
+): OnboardingGraduationStatus => {
+  switch (status) {
+    case "graduated":
+    case "deferred":
+    case "withdrawn":
+    case "alumni":
+    case "in_program":
+      return status;
+    default:
+      return "in_program";
+  }
+};
+
+const ensureAlumniChannel = (
+  channel: string | undefined,
+): OnboardingAlumniTouchpoint["channel"] => {
+  switch (channel) {
+    case "email":
+    case "call":
+    case "meeting":
+    case "event":
+    case "demo":
+    case "survey":
+    case "other":
+      return channel;
+    default:
+      return undefined;
+  }
+};
+
+const ensureAlumniSentiment = (
+  sentiment: string | undefined,
+): OnboardingAlumniTouchpoint["sentiment"] => {
+  switch (sentiment) {
+    case "positive":
+    case "neutral":
+    case "negative":
+      return sentiment;
+    default:
+      return undefined;
+  }
+};
+
+const normalizeAlumniMetric = (
+  metric: OnboardingAlumniMetric | OnboardingAlumniMetricInput,
+): OnboardingAlumniMetric => {
+  const nowIso = new Date().toISOString();
+  const key = metric.key?.trim() || metric.label?.trim() || "metric";
+  const label = metric.label?.trim() || key;
+  const numericValue = ensureNumber(metric.value) ?? 0;
+
+  return {
+    id: (metric as OnboardingAlumniMetric).id ?? metric.id ?? randomUUID(),
+    key,
+    label,
+    value: numericValue,
+    unit: metric.unit?.trim() || undefined,
+    recordedAt: normalizeIsoDate((metric as OnboardingAlumniMetric).recordedAt ?? metric.recordedAt) ?? nowIso,
+    note: metric.note?.trim() || undefined,
+  };
+};
+
+const normalizeAlumniTouchpoint = (
+  touchpoint: OnboardingAlumniTouchpoint | OnboardingAlumniTouchpointInput,
+): OnboardingAlumniTouchpoint => {
+  const nowIso = new Date().toISOString();
+  const recordedAt = normalizeIsoDate((touchpoint as OnboardingAlumniTouchpoint).recordedAt ?? touchpoint.recordedAt) ?? nowIso;
+
+  return {
+    id: (touchpoint as OnboardingAlumniTouchpoint).id ?? randomUUID(),
+    recordedAt,
+    recordedBy: touchpoint.recordedBy?.trim() || undefined,
+    channel: ensureAlumniChannel((touchpoint as OnboardingAlumniTouchpoint).channel ?? touchpoint.channel),
+    highlight: touchpoint.highlight?.trim() || undefined,
+    sentiment: ensureAlumniSentiment((touchpoint as OnboardingAlumniTouchpoint).sentiment ?? touchpoint.sentiment),
+    notes: touchpoint.notes?.trim() || undefined,
+    nextActionAt: normalizeIsoDate((touchpoint as OnboardingAlumniTouchpoint).nextActionAt ?? touchpoint.nextActionAt),
+    nextActionOwner: touchpoint.nextActionOwner?.trim() || undefined,
+  };
+};
+
+const normalizeAlumniRecord = (
+  startupId: string,
+  raw?: Partial<OnboardingAlumniRecord>,
+): OnboardingAlumniRecord => {
+  const nowIso = new Date().toISOString();
+  const createdAt = normalizeIsoDate(raw?.createdAt) ?? nowIso;
+  const updatedAt = normalizeIsoDate(raw?.updatedAt) ?? createdAt;
+
+  const touchpoints = ((raw?.touchpoints ?? []) as Array<
+    OnboardingAlumniTouchpoint | OnboardingAlumniTouchpointInput
+  >)
+    .map((entry) => normalizeAlumniTouchpoint(entry))
+    .reduce<OnboardingAlumniTouchpoint[]>((acc, entry) => {
+      if (!acc.some((existing) => existing.id === entry.id)) {
+        acc.push(entry);
+      }
+      return acc;
+    }, [])
+    .sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+
+  const metrics = ((raw?.metrics ?? []) as Array<OnboardingAlumniMetric | OnboardingAlumniMetricInput>)
+    .map((entry) => normalizeAlumniMetric(entry))
+    .reduce<OnboardingAlumniMetric[]>((acc, entry) => {
+      if (!acc.some((existing) => existing.id === entry.id)) {
+        acc.push(entry);
+      }
+      return acc;
+    }, [])
+    .sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+
+  const tags = Array.from(
+    new Set(
+      (raw?.tags ?? [])
+        .map((tag) => sanitizeTag(tag))
+        .filter((tag): tag is string => Boolean(tag)),
+    ),
+  );
+
+  const lastContactAt =
+    normalizeIsoDate(raw?.lastContactAt) ?? touchpoints[0]?.recordedAt;
+
+  return {
+    startupId,
+    status: ensureGraduationStatus(raw?.status),
+    cohort: raw?.cohort?.trim() || undefined,
+    programStartAt: normalizeIsoDate(raw?.programStartAt),
+    graduationDate: normalizeIsoDate(raw?.graduationDate),
+    alumniSince:
+      normalizeIsoDate(raw?.alumniSince) ?? normalizeIsoDate(raw?.graduationDate),
+    primaryMentor: raw?.primaryMentor?.trim() || undefined,
+    supportOwner: raw?.supportOwner?.trim() || undefined,
+    tags,
+    notes: raw?.notes?.trim() || undefined,
+    impactScore: clampImpactScore(raw?.impactScore),
+    fundingRaised:
+      raw?.fundingRaised !== undefined ? ensureNumber(raw.fundingRaised) : undefined,
+    revenueRunRate:
+      raw?.revenueRunRate !== undefined ? ensureNumber(raw.revenueRunRate) : undefined,
+    jobsCreated:
+      raw?.jobsCreated !== undefined ? ensureNumber(raw.jobsCreated) : undefined,
+    currency: raw?.currency?.trim() || undefined,
+    lastContactAt,
+    nextCheckInAt: normalizeIsoDate(raw?.nextCheckInAt),
+    createdAt,
+    updatedAt,
+    metrics,
+    touchpoints,
+  };
+};
+
+const alumniTemplate = (startupId: string): OnboardingAlumniRecord => {
+  const nowIso = new Date().toISOString();
+  return normalizeAlumniRecord(startupId, {
+    startupId,
+    status: "in_program",
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    metrics: [],
+    touchpoints: [],
+  });
+};
+
+const findLatestMetricValue = (
+  metrics: OnboardingAlumniMetric[],
+  key: string,
+): number | undefined => {
+  const target = key.toLowerCase();
+  for (const metric of metrics) {
+    if (metric.key.toLowerCase() === target) {
+      return metric.value;
+    }
+  }
+  return undefined;
+};
+
+const computeAlumniSignals = (
+  record: OnboardingAlumniRecord,
+): OnboardingAlumniSignals => {
+  const now = Date.now();
+  const signals: OnboardingAlumniSignals = {
+    hasGraduated: record.status === "graduated" || record.status === "alumni",
+    touchpointCount: record.touchpoints.length,
+    needsCheckIn: false,
+  };
+
+  const graduationRef = record.alumniSince ?? record.graduationDate;
+  if (graduationRef) {
+    const gradTime = new Date(graduationRef).getTime();
+    if (!Number.isNaN(gradTime) && gradTime <= now) {
+      const diffMonths = Math.floor((now - gradTime) / (30 * MILLISECONDS_IN_DAY));
+      signals.monthsSinceGraduation = diffMonths >= 0 ? diffMonths : undefined;
+    }
+  }
+
+  const lastTouchTime = record.lastContactAt
+    ? new Date(record.lastContactAt).getTime()
+    : undefined;
+  if (lastTouchTime !== undefined && !Number.isNaN(lastTouchTime)) {
+    signals.lastTouchpointAt = record.lastContactAt;
+  }
+
+  const nextCheckTime = record.nextCheckInAt
+    ? new Date(record.nextCheckInAt).getTime()
+    : undefined;
+
+  if (nextCheckTime !== undefined && !Number.isNaN(nextCheckTime)) {
+    const diffDays = Math.round((nextCheckTime - now) / MILLISECONDS_IN_DAY);
+    if (diffDays < 0) {
+      signals.needsCheckIn = true;
+      signals.checkInOverdueByDays = Math.abs(diffDays);
+    } else {
+      signals.checkInDueInDays = diffDays;
+      if (diffDays <= CHECKIN_SOON_WINDOW_DAYS) {
+        signals.needsCheckIn = true;
+      }
+    }
+  } else if (lastTouchTime !== undefined && !Number.isNaN(lastTouchTime)) {
+    const diffDays = Math.floor((now - lastTouchTime) / MILLISECONDS_IN_DAY);
+    if (diffDays >= DEFAULT_CHECKIN_GAP_DAYS) {
+      signals.needsCheckIn = true;
+      signals.checkInOverdueByDays = diffDays;
+    }
+  } else if (record.touchpoints.length === 0) {
+    signals.needsCheckIn = true;
+  }
+
+  signals.totalFundingRaised =
+    record.fundingRaised ??
+    findLatestMetricValue(record.metrics, "funding_raised") ??
+    findLatestMetricValue(record.metrics, "funding");
+
+  signals.jobsCreated =
+    record.jobsCreated ?? findLatestMetricValue(record.metrics, "jobs_created");
+
+  signals.revenueRunRate =
+    record.revenueRunRate ??
+    findLatestMetricValue(record.metrics, "revenue_run_rate") ??
+    findLatestMetricValue(record.metrics, "arr");
+
+  return signals;
+};
+
+const buildAlumniSnapshot = (
+  record: OnboardingAlumniRecord,
+): OnboardingAlumniSnapshot => ({
+  ...record,
+  signals: computeAlumniSignals(record),
+});
+
+const getAlumniRecordInternal = async (
+  startupId: string,
+): Promise<OnboardingAlumniRecord> => {
+  const bucket = getBucketName();
+  const key = `${ALUMNI_PREFIX}${startupId}.json`;
+
+  try {
+    const response = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      }),
+    );
+    const raw = await streamToString(response.Body);
+    if (!raw) {
+      return alumniTemplate(startupId);
+    }
+
+    const parsed = JSON.parse(raw) as OnboardingAlumniRecord;
+    return normalizeAlumniRecord(startupId, parsed);
+  } catch (error: any) {
+    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
+      return alumniTemplate(startupId);
+    }
+    console.error("Failed to load alumni record", error);
+    throw new Error("Unable to load alumni profile");
+  }
+};
+
+const saveAlumniRecord = async (
+  startupId: string,
+  record: OnboardingAlumniRecord,
+): Promise<OnboardingAlumniRecord> => {
+  const bucket = getBucketName();
+  const normalized = normalizeAlumniRecord(startupId, record);
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: `${ALUMNI_PREFIX}${startupId}.json`,
+      Body: toBuffer(normalized),
+      ContentType: "application/json",
+    }),
+  );
+
+  return normalized;
+};
+
+export const getOnboardingAlumniRecord = async (
+  startupId: string,
+): Promise<OnboardingAlumniSnapshot> => {
+  const record = await getAlumniRecordInternal(startupId);
+  return buildAlumniSnapshot(record);
+};
+
+export const updateOnboardingAlumniRecord = async (
+  startupId: string,
+  update: OnboardingAlumniUpdateInput,
+): Promise<OnboardingAlumniSnapshot> => {
+  const record = await getAlumniRecordInternal(startupId);
+  const nowIso = new Date().toISOString();
+
+  if (update.status) {
+    record.status = ensureGraduationStatus(update.status);
+  }
+  if (update.cohort !== undefined) {
+    record.cohort = update.cohort?.trim() || undefined;
+  }
+  if (update.programStartAt !== undefined) {
+    record.programStartAt = normalizeIsoDate(update.programStartAt);
+  }
+  if (update.graduationDate !== undefined) {
+    record.graduationDate = normalizeIsoDate(update.graduationDate);
+  }
+  if (update.alumniSince !== undefined) {
+    record.alumniSince = normalizeIsoDate(update.alumniSince);
+  }
+  if (update.primaryMentor !== undefined) {
+    record.primaryMentor = update.primaryMentor?.trim() || undefined;
+  }
+  if (update.supportOwner !== undefined) {
+    record.supportOwner = update.supportOwner?.trim() || undefined;
+  }
+  if (update.tags !== undefined) {
+    record.tags = Array.from(
+      new Set(
+        (update.tags ?? [])
+          .map((tag) => sanitizeTag(tag))
+          .filter((tag): tag is string => Boolean(tag)),
+      ),
+    );
+  }
+  if (update.notes !== undefined) {
+    record.notes = update.notes?.trim() || undefined;
+  }
+  if (update.impactScore !== undefined) {
+    record.impactScore = clampImpactScore(update.impactScore);
+  }
+  if (update.fundingRaised !== undefined) {
+    record.fundingRaised = ensureNumber(update.fundingRaised);
+  }
+  if (update.revenueRunRate !== undefined) {
+    record.revenueRunRate = ensureNumber(update.revenueRunRate);
+  }
+  if (update.jobsCreated !== undefined) {
+    record.jobsCreated = ensureNumber(update.jobsCreated);
+  }
+  if (update.currency !== undefined) {
+    record.currency = update.currency?.trim() || undefined;
+  }
+  if (update.nextCheckInAt !== undefined) {
+    record.nextCheckInAt = normalizeIsoDate(update.nextCheckInAt);
+  }
+  if (update.metrics !== undefined) {
+    const normalizedMetrics = (update.metrics ?? [])
+      .map((metric) => normalizeAlumniMetric(metric))
+      .sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+    record.metrics = normalizedMetrics;
+  }
+
+  record.updatedAt = nowIso;
+
+  const stored = await saveAlumniRecord(startupId, record);
+  return buildAlumniSnapshot(stored);
+};
+
+export const appendOnboardingAlumniTouchpoint = async (
+  startupId: string,
+  touchpoint: OnboardingAlumniTouchpointInput,
+  metrics?: OnboardingAlumniMetricInput[],
+): Promise<OnboardingAlumniSnapshot> => {
+  const record = await getAlumniRecordInternal(startupId);
+  const normalizedTouchpoint = normalizeAlumniTouchpoint(touchpoint);
+
+  record.touchpoints.unshift(normalizedTouchpoint);
+  record.touchpoints = record.touchpoints
+    .reduce<OnboardingAlumniTouchpoint[]>((acc, entry) => {
+      if (!acc.some((existing) => existing.id === entry.id)) {
+        acc.push(entry);
+      }
+      return acc;
+    }, [])
+    .sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+
+  record.lastContactAt = record.touchpoints[0]?.recordedAt ?? record.lastContactAt;
+
+  if (normalizedTouchpoint.nextActionAt) {
+    const nextActionTime = new Date(normalizedTouchpoint.nextActionAt).getTime();
+    const currentNext = record.nextCheckInAt
+      ? new Date(record.nextCheckInAt).getTime()
+      : undefined;
+    if (!Number.isNaN(nextActionTime)) {
+      if (currentNext === undefined || nextActionTime < currentNext) {
+        record.nextCheckInAt = normalizedTouchpoint.nextActionAt;
+      }
+    }
+  }
+
+  if (metrics?.length) {
+    const normalizedMetrics = metrics
+      .map((metric) =>
+        normalizeAlumniMetric({
+          ...metric,
+          recordedAt: metric.recordedAt ?? normalizedTouchpoint.recordedAt,
+        }),
+      )
+      .sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+
+    record.metrics = [...normalizedMetrics, ...record.metrics].reduce<OnboardingAlumniMetric[]>(
+      (acc, entry) => {
+        if (!acc.some((existing) => existing.id === entry.id)) {
+          acc.push(entry);
+        }
+        return acc;
+      },
+      [],
+    );
+    record.metrics.sort((a, b) => new Date(b.recordedAt).getTime() - new Date(a.recordedAt).getTime());
+  }
+
+  record.updatedAt = new Date().toISOString();
+
+  const stored = await saveAlumniRecord(startupId, record);
+  return buildAlumniSnapshot(stored);
+};
+
+const GRANT_DEADLINE_SOON_DAYS = 14;
+
+const ensureGrantStatus = (
+  status: string | undefined,
+): OnboardingGrantOpportunity["status"] => {
+  switch (status) {
+    case "researching":
+    case "preparing":
+    case "submitted":
+    case "awarded":
+    case "closed":
+      return status;
+    default:
+      return "researching";
+  }
+};
+
+const normalizeGrantEligibility = (
+  entry: OnboardingGrantEligibility | OnboardingGrantEligibilityInput | undefined,
+  fallback?: OnboardingGrantEligibility,
+): OnboardingGrantEligibility | undefined => {
+  if (!entry && !fallback) {
+    return undefined;
+  }
+
+  const labelSource = entry?.label ?? fallback?.label;
+  const label = labelSource?.trim();
+  if (!label) {
+    return undefined;
+  }
+
+  return {
+    id: fallback?.id ?? (entry as OnboardingGrantEligibility)?.id ?? entry?.id ?? randomUUID(),
+    label,
+    met: entry?.met ?? (entry as OnboardingGrantEligibility)?.met ?? fallback?.met ?? false,
+    notes: entry?.notes?.trim() || (entry as OnboardingGrantEligibility)?.notes?.trim() || fallback?.notes,
+  };
+};
+
+const normalizeGrantEligibilityList = (
+  entries: Array<OnboardingGrantEligibility | OnboardingGrantEligibilityInput>,
+  existing: OnboardingGrantEligibility[] = [],
+): OnboardingGrantEligibility[] => {
+  if (!entries?.length) {
+    return [];
+  }
+
+  const existingById = new Map(existing.map((item) => [item.id, item]));
+  const existingByLabel = new Map(existing.map((item) => [item.label.toLowerCase(), item]));
+  const seen = new Set<string>();
+  const normalized: OnboardingGrantEligibility[] = [];
+
+  entries.forEach((item) => {
+    if (!item) {
+      return;
+    }
+    const label = item.label?.trim();
+    if (!label) {
+      return;
+    }
+    const previous = (item as OnboardingGrantEligibility).id
+      ? existingById.get((item as OnboardingGrantEligibility).id)
+      : existingByLabel.get(label.toLowerCase());
+    const entry = normalizeGrantEligibility(item, previous);
+    if (!entry || seen.has(entry.id)) {
+      return;
+    }
+    seen.add(entry.id);
+    normalized.push(entry);
+  });
+
+  normalized.sort((a, b) => a.label.localeCompare(b.label));
+  return normalized;
+};
+
+const sanitizeGrantOpportunity = (
+  raw: OnboardingGrantOpportunity | OnboardingGrantOpportunityInput,
+): OnboardingGrantOpportunity => {
+  const nowIso = new Date().toISOString();
+  const base = raw as OnboardingGrantOpportunity;
+
+  const createdAt = normalizeIsoDate(base.createdAt) ?? nowIso;
+  const updatedAt = normalizeIsoDate(base.updatedAt) ?? createdAt;
+
+  let title = raw.title ?? base.title ?? "Untitled opportunity";
+  title = title ? title.trim() : "Untitled opportunity";
+  if (!title.length) {
+    title = "Untitled opportunity";
+  }
+
+  const amountSource = base.amount ?? raw.amount;
+  const amount =
+    amountSource === null || amountSource === undefined
+      ? undefined
+      : ensureNumber(amountSource);
+
+  const currencySource = raw.currency ?? base.currency;
+  const currency =
+    currencySource && currencySource.trim().length
+      ? currencySource.trim().toUpperCase()
+      : undefined;
+
+  const eligibility = normalizeGrantEligibilityList(
+    ((base.eligibility ?? raw.eligibility) ?? []) as Array<
+      OnboardingGrantEligibility | OnboardingGrantEligibilityInput
+    >,
+    [],
+  );
+
+  return {
+    id: base.id ?? raw.id ?? randomUUID(),
+    title,
+    provider: raw.provider?.trim() || base.provider?.trim() || undefined,
+    description: raw.description?.trim() || base.description?.trim() || undefined,
+    amount: amount ?? undefined,
+    currency,
+    deadline: normalizeIsoDate(raw.deadline ?? base.deadline),
+    status: ensureGrantStatus(base.status ?? raw.status),
+    link: raw.link?.trim() || base.link?.trim() || undefined,
+    owner: raw.owner?.trim() || base.owner?.trim() || undefined,
+    notes: raw.notes?.trim() || base.notes?.trim() || undefined,
+    eligibility,
+    createdAt,
+    updatedAt,
+    lastActivityAt: normalizeIsoDate(base.lastActivityAt) ?? updatedAt,
+  };
+};
+
+const sortGrantOpportunities = (
+  entries: OnboardingGrantOpportunity[],
+) => {
+  entries.sort((a, b) => {
+    const deadlineA = a.deadline ? new Date(a.deadline).getTime() : Number.POSITIVE_INFINITY;
+    const deadlineB = b.deadline ? new Date(b.deadline).getTime() : Number.POSITIVE_INFINITY;
+
+    if (!Number.isNaN(deadlineA) && !Number.isNaN(deadlineB) && deadlineA !== deadlineB) {
+      return deadlineA - deadlineB;
+    }
+
+    const updatedA = new Date(a.updatedAt).getTime();
+    const updatedB = new Date(b.updatedAt).getTime();
+    return updatedB - updatedA;
+  });
+};
+
+const normalizeGrantCatalog = (
+  startupId: string,
+  raw?: Partial<OnboardingGrantCatalog>,
+): OnboardingGrantCatalog => {
+  const nowIso = new Date().toISOString();
+  const createdAt = normalizeIsoDate(raw?.createdAt) ?? nowIso;
+  const updatedAt = normalizeIsoDate(raw?.updatedAt) ?? createdAt;
+
+  const seen = new Set<string>();
+  const opportunities: OnboardingGrantOpportunity[] = [];
+
+  ((raw?.opportunities ?? []) as Array<OnboardingGrantOpportunity | OnboardingGrantOpportunityInput>).forEach(
+    (entry) => {
+      if (!entry) {
+        return;
+      }
+      const normalized = sanitizeGrantOpportunity(entry);
+      if (seen.has(normalized.id)) {
+        return;
+      }
+      seen.add(normalized.id);
+      opportunities.push(normalized);
+    },
+  );
+
+  sortGrantOpportunities(opportunities);
+
+  return {
+    startupId,
+    createdAt,
+    updatedAt,
+    opportunities,
+  };
+};
+
+const grantCatalogTemplate = (startupId: string): OnboardingGrantCatalog => {
+  const nowIso = new Date().toISOString();
+  return {
+    startupId,
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    opportunities: [],
+  };
+};
+
+const computeGrantOpportunitySignals = (
+  opportunity: OnboardingGrantOpportunity,
+): OnboardingGrantOpportunitySignals => {
+  const now = Date.now();
+  let daysUntilDeadline: number | undefined;
+  let isOverdue = false;
+  const hasDeadline = Boolean(opportunity.deadline);
+
+  if (opportunity.deadline) {
+    const deadlineTime = new Date(opportunity.deadline).getTime();
+    if (!Number.isNaN(deadlineTime)) {
+      const diffDays = Math.ceil((deadlineTime - now) / MILLISECONDS_IN_DAY);
+      daysUntilDeadline = diffDays;
+      if (
+        diffDays < 0 &&
+        opportunity.status !== "submitted" &&
+        opportunity.status !== "awarded" &&
+        opportunity.status !== "closed"
+      ) {
+        isOverdue = true;
+      }
+    }
+  }
+
+  const unmetEligibilityCount = opportunity.eligibility.filter((item) => !item.met).length;
+
+  return {
+    hasDeadline,
+    daysUntilDeadline,
+    isOverdue,
+    isSubmitted: opportunity.status === "submitted" || opportunity.status === "awarded",
+    eligibilityComplete: unmetEligibilityCount === 0,
+    unmetEligibilityCount,
+  };
+};
+
+const buildGrantOpportunitySnapshot = (
+  opportunity: OnboardingGrantOpportunity,
+): OnboardingGrantOpportunitySnapshot => ({
+  ...opportunity,
+  signals: computeGrantOpportunitySignals(opportunity),
+});
+
+const computeGrantCatalogSignals = (
+  catalog: OnboardingGrantCatalog,
+): OnboardingGrantCatalogSignals => {
+  const now = Date.now();
+  let dueSoon = 0;
+  let overdue = 0;
+  let awarded = 0;
+  let submitted = 0;
+
+  catalog.opportunities.forEach((opportunity) => {
+    if (opportunity.status === "awarded") {
+      awarded += 1;
+    }
+    if (opportunity.status === "submitted") {
+      submitted += 1;
+    }
+
+    if (!opportunity.deadline) {
+      return;
+    }
+
+    const deadlineTime = new Date(opportunity.deadline).getTime();
+    if (Number.isNaN(deadlineTime)) {
+      return;
+    }
+
+    const diffDays = Math.ceil((deadlineTime - now) / MILLISECONDS_IN_DAY);
+    if (
+      diffDays < 0 &&
+      opportunity.status !== "awarded" &&
+      opportunity.status !== "submitted" &&
+      opportunity.status !== "closed"
+    ) {
+      overdue += 1;
+    } else if (
+      diffDays >= 0 &&
+      diffDays <= GRANT_DEADLINE_SOON_DAYS &&
+      opportunity.status !== "awarded" &&
+      opportunity.status !== "closed"
+    ) {
+      dueSoon += 1;
+    }
+  });
+
+  return {
+    total: catalog.opportunities.length,
+    dueSoon,
+    overdue,
+    awarded,
+    submitted,
+  };
+};
+
+const buildGrantCatalogSnapshot = (
+  catalog: OnboardingGrantCatalog,
+): OnboardingGrantCatalogSnapshot => ({
+  startupId: catalog.startupId,
+  createdAt: catalog.createdAt,
+  updatedAt: catalog.updatedAt,
+  opportunities: catalog.opportunities.map((opportunity) => buildGrantOpportunitySnapshot(opportunity)),
+  signals: computeGrantCatalogSignals(catalog),
+});
+
+const getGrantCatalogInternal = async (
+  startupId: string,
+): Promise<OnboardingGrantCatalog> => {
+  const bucket = getBucketName();
+  const key = `${GRANTS_PREFIX}${startupId}.json`;
+
+  try {
+    const response = await s3.send(
+      new GetObjectCommand({
+        Bucket: bucket,
+        Key: key,
+      }),
+    );
+    const raw = await streamToString(response.Body);
+    if (!raw) {
+      return grantCatalogTemplate(startupId);
+    }
+
+    const parsed = JSON.parse(raw) as OnboardingGrantCatalog;
+    return normalizeGrantCatalog(startupId, parsed);
+  } catch (error: any) {
+    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
+      return grantCatalogTemplate(startupId);
+    }
+    console.error("Failed to load grant catalog", error);
+    throw new Error("Unable to load grant opportunities");
+  }
+};
+
+const saveGrantCatalog = async (
+  startupId: string,
+  catalog: OnboardingGrantCatalog,
+): Promise<OnboardingGrantCatalog> => {
+  const bucket = getBucketName();
+  const normalized = normalizeGrantCatalog(startupId, catalog);
+
+  await s3.send(
+    new PutObjectCommand({
+      Bucket: bucket,
+      Key: `${GRANTS_PREFIX}${startupId}.json`,
+      Body: toBuffer(normalized),
+      ContentType: "application/json",
+    }),
+  );
+
+  return normalized;
+};
+
+const createGrantOpportunityRecord = (
+  input: OnboardingGrantOpportunityInput,
+): OnboardingGrantOpportunity => {
+  if (!input.title || !input.title.trim()) {
+    throw new Error("Grant title is required");
+  }
+
+  const nowIso = new Date().toISOString();
+  const amount =
+    input.amount === null || input.amount === undefined
+      ? undefined
+      : ensureNumber(input.amount);
+  const currency =
+    input.currency && input.currency.trim().length
+      ? input.currency.trim().toUpperCase()
+      : undefined;
+
+  return {
+    id: input.id ?? randomUUID(),
+    title: input.title.trim(),
+    provider: input.provider?.trim() || undefined,
+    description: input.description?.trim() || undefined,
+    amount: amount ?? undefined,
+    currency,
+    deadline: normalizeIsoDate(input.deadline),
+    status: ensureGrantStatus(input.status),
+    link: input.link?.trim() || undefined,
+    owner: input.owner?.trim() || undefined,
+    notes: input.notes?.trim() || undefined,
+    eligibility: normalizeGrantEligibilityList(input.eligibility ?? [], []),
+    createdAt: nowIso,
+    updatedAt: nowIso,
+    lastActivityAt: nowIso,
+  };
+};
+
+const applyGrantOpportunityUpdate = (
+  opportunity: OnboardingGrantOpportunity,
+  update: OnboardingGrantOpportunityInput,
+): boolean => {
+  let changed = false;
+
+  if (update.title !== undefined) {
+    const nextTitle = update.title?.trim() || "Untitled opportunity";
+    if (nextTitle !== opportunity.title) {
+      opportunity.title = nextTitle;
+      changed = true;
+    }
+  }
+
+  if (update.provider !== undefined) {
+    const nextProvider = update.provider?.trim() || undefined;
+    if (nextProvider !== opportunity.provider) {
+      opportunity.provider = nextProvider;
+      changed = true;
+    }
+  }
+
+  if (update.description !== undefined) {
+    const nextDescription = update.description?.trim() || undefined;
+    if (nextDescription !== opportunity.description) {
+      opportunity.description = nextDescription;
+      changed = true;
+    }
+  }
+
+  if (update.link !== undefined) {
+    const nextLink = update.link?.trim() || undefined;
+    if (nextLink !== opportunity.link) {
+      opportunity.link = nextLink;
+      changed = true;
+    }
+  }
+
+  if (update.owner !== undefined) {
+    const nextOwner = update.owner?.trim() || undefined;
+    if (nextOwner !== opportunity.owner) {
+      opportunity.owner = nextOwner;
+      changed = true;
+    }
+  }
+
+  if (update.notes !== undefined) {
+    const nextNotes = update.notes?.trim() || undefined;
+    if (nextNotes !== opportunity.notes) {
+      opportunity.notes = nextNotes;
+      changed = true;
+    }
+  }
+
+  if (update.amount !== undefined) {
+    const nextAmount =
+      update.amount === null || update.amount === undefined
+        ? undefined
+        : ensureNumber(update.amount);
+    if (nextAmount !== opportunity.amount) {
+      opportunity.amount = nextAmount ?? undefined;
+      changed = true;
+    }
+  }
+
+  if (update.currency !== undefined) {
+    const nextCurrency =
+      update.currency && update.currency.trim().length
+        ? update.currency.trim().toUpperCase()
+        : undefined;
+    if (nextCurrency !== opportunity.currency) {
+      opportunity.currency = nextCurrency;
+      changed = true;
+    }
+  }
+
+  if (update.deadline !== undefined) {
+    const nextDeadline = normalizeIsoDate(update.deadline);
+    if (nextDeadline !== opportunity.deadline) {
+      opportunity.deadline = nextDeadline;
+      changed = true;
+    }
+  }
+
+  if (update.status !== undefined) {
+    const nextStatus = ensureGrantStatus(update.status);
+    if (nextStatus !== opportunity.status) {
+      opportunity.status = nextStatus;
+      changed = true;
+    }
+  }
+
+  if (update.eligibility !== undefined) {
+    opportunity.eligibility = normalizeGrantEligibilityList(
+      update.eligibility ?? [],
+      opportunity.eligibility,
+    );
+    changed = true;
+  }
+
+  if (changed) {
+    const nowIso = new Date().toISOString();
+    opportunity.updatedAt = nowIso;
+    opportunity.lastActivityAt = nowIso;
+  }
+
+  return changed;
+};
+
+export const getOnboardingGrantCatalog = async (
+  startupId: string,
+): Promise<OnboardingGrantCatalogSnapshot> => {
+  const catalog = await getGrantCatalogInternal(startupId);
+  return buildGrantCatalogSnapshot(catalog);
+};
+
+export const createOnboardingGrantOpportunity = async (
+  startupId: string,
+  opportunity: OnboardingGrantOpportunityInput,
+): Promise<OnboardingGrantCatalogSnapshot> => {
+  const catalog = await getGrantCatalogInternal(startupId);
+  const record = createGrantOpportunityRecord(opportunity);
+  catalog.opportunities.push(record);
+  sortGrantOpportunities(catalog.opportunities);
+  catalog.updatedAt = record.updatedAt;
+
+  const stored = await saveGrantCatalog(startupId, catalog);
+  return buildGrantCatalogSnapshot(stored);
+};
+
+export const updateOnboardingGrantOpportunity = async (
+  startupId: string,
+  opportunityId: string,
+  update: OnboardingGrantOpportunityInput,
+): Promise<OnboardingGrantCatalogSnapshot> => {
+  const catalog = await getGrantCatalogInternal(startupId);
+  const target = catalog.opportunities.find((item) => item.id === opportunityId);
+
+  if (!target) {
+    throw new Error("Grant opportunity not found");
+  }
+
+  const changed = applyGrantOpportunityUpdate(target, update);
+  sortGrantOpportunities(catalog.opportunities);
+  if (changed) {
+    catalog.updatedAt = target.updatedAt;
+  }
+
+  const stored = await saveGrantCatalog(startupId, catalog);
+  return buildGrantCatalogSnapshot(stored);
+};
+
+export const deleteOnboardingGrantOpportunity = async (
+  startupId: string,
+  opportunityId: string,
+): Promise<OnboardingGrantCatalogSnapshot> => {
+  const catalog = await getGrantCatalogInternal(startupId);
+  const before = catalog.opportunities.length;
+  catalog.opportunities = catalog.opportunities.filter((item) => item.id !== opportunityId);
+
+  if (catalog.opportunities.length === before) {
+    throw new Error("Grant opportunity not found");
+  }
+
+  catalog.updatedAt = new Date().toISOString();
+
+  const stored = await saveGrantCatalog(startupId, catalog);
+  return buildGrantCatalogSnapshot(stored);
 };
 
 const buildDocumentFromMetadata = (

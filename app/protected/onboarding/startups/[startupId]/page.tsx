@@ -7,6 +7,15 @@ import {
   OnboardingChecklistItem,
   OnboardingChecklistStatus,
   OnboardingDocument,
+  OnboardingAlumniSnapshot,
+  OnboardingAlumniUpdateInput,
+  OnboardingAlumniTouchpointInput,
+  OnboardingAlumniMetricInput,
+  OnboardingGraduationStatus,
+  OnboardingGrantCatalogSnapshot,
+  OnboardingGrantEligibilityInput,
+  OnboardingGrantOpportunityInput,
+  OnboardingGrantStatus,
   OnboardingMilestonePlanSnapshot,
   OnboardingMilestoneStatus,
   OnboardingMilestoneUpdateInput,
@@ -28,6 +37,8 @@ type WorkspacePayload = {
   checklist: OnboardingChecklist;
   documents: OnboardingDocument[];
   milestones: OnboardingMilestonePlanSnapshot;
+  alumni: OnboardingAlumniSnapshot;
+  grants: OnboardingGrantCatalogSnapshot;
   error?: string;
 };
 
@@ -40,6 +51,12 @@ type ChecklistUpdateResponse = {
 type DocumentUploadResponse = {
   ok: boolean;
   document?: OnboardingDocument;
+  error?: string;
+};
+
+type GrantCatalogResponse = {
+  ok: boolean;
+  grants: OnboardingGrantCatalogSnapshot;
   error?: string;
 };
 
@@ -63,6 +80,57 @@ const MILESTONE_BADGE_STYLES: Record<OnboardingMilestoneStatus, string> = {
   at_risk: "border-amber-500/60 bg-amber-500/10 text-amber-200",
   off_track: "border-red-500/60 bg-red-500/10 text-red-200",
   completed: "border-blue-500/60 bg-blue-500/10 text-blue-200",
+};
+
+const GRADUATION_STATUS_OPTIONS: { value: OnboardingGraduationStatus; label: string }[] = [
+  { value: "in_program", label: "In program" },
+  { value: "graduated", label: "Graduated" },
+  { value: "alumni", label: "Active alumni" },
+  { value: "deferred", label: "Deferred" },
+  { value: "withdrawn", label: "Withdrawn" },
+];
+
+const TOUCHPOINT_CHANNEL_OPTIONS = [
+  { value: "call", label: "Call" },
+  { value: "meeting", label: "Meeting" },
+  { value: "email", label: "Email" },
+  { value: "event", label: "Event" },
+  { value: "demo", label: "Demo" },
+  { value: "survey", label: "Survey" },
+  { value: "other", label: "Other" },
+];
+
+const TOUCHPOINT_SENTIMENT_OPTIONS = [
+  { value: "positive", label: "Positive" },
+  { value: "neutral", label: "Neutral" },
+  { value: "negative", label: "Negative" },
+];
+
+const TOUCHPOINT_SENTIMENT_BADGE: Record<"positive" | "neutral" | "negative", string> = {
+  positive: "text-emerald-300",
+  neutral: "text-slate-300",
+  negative: "text-red-300",
+};
+
+const GRANT_STATUS_OPTIONS: { value: OnboardingGrantStatus; label: string }[] = [
+  { value: "researching", label: "Researching" },
+  { value: "preparing", label: "Preparing" },
+  { value: "submitted", label: "Submitted" },
+  { value: "awarded", label: "Awarded" },
+  { value: "closed", label: "Closed" },
+];
+
+const GRANT_STATUS_BADGE: Record<OnboardingGrantStatus, string> = {
+  researching: "border-sky-500/50 bg-sky-500/10 text-sky-200",
+  preparing: "border-amber-500/50 bg-amber-500/10 text-amber-200",
+  submitted: "border-blue-500/60 bg-blue-500/10 text-blue-200",
+  awarded: "border-emerald-500/60 bg-emerald-500/10 text-emerald-200",
+  closed: "border-slate-700 bg-slate-900/70 text-slate-300",
+};
+
+const getGrantStatusLabel = (status: OnboardingGrantStatus) => {
+  const option = GRANT_STATUS_OPTIONS.find((entry) => entry.value === status);
+  return option?.label ?? status;
 };
 
 const formatDate = (value?: string) => {
@@ -90,6 +158,31 @@ const formatDateTime = (value: string) => {
     hour: "2-digit",
     minute: "2-digit",
   });
+};
+
+const formatNumber = (value?: number, options?: Intl.NumberFormatOptions) => {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return "—";
+  }
+  return Number(value).toLocaleString(undefined, options);
+};
+
+const formatCurrency = (value?: number, currency?: string) => {
+  if (value === undefined || value === null || Number.isNaN(value)) {
+    return "—";
+  }
+  if (currency && currency.length >= 3) {
+    try {
+      return new Intl.NumberFormat(undefined, {
+        style: "currency",
+        currency: currency.toUpperCase(),
+        maximumFractionDigits: 0,
+      }).format(value);
+    } catch (error) {
+      // Fallback to plain number if currency code is invalid.
+    }
+  }
+  return formatNumber(value);
 };
 
 const createNewChecklistItem = (title: string, description?: string, dueDate?: string): OnboardingChecklistItem => {
@@ -135,6 +228,75 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
   const [newMilestoneReminderCadence, setNewMilestoneReminderCadence] = useState("7");
   const [newMilestoneEscalationAfter, setNewMilestoneEscalationAfter] = useState("3");
   const [newMilestoneEscalateTo, setNewMilestoneEscalateTo] = useState("");
+  const [grants, setGrants] = useState<OnboardingGrantCatalogSnapshot | null>(null);
+  const [grantForm, setGrantForm] = useState({
+    title: "",
+    provider: "",
+    amount: "",
+    currency: "",
+    deadline: "",
+    link: "",
+    status: "researching" as OnboardingGrantStatus,
+    owner: "",
+    notes: "",
+    description: "",
+  });
+  const [grantEligibilityDraft, setGrantEligibilityDraft] = useState("");
+  const [creatingGrant, setCreatingGrant] = useState(false);
+  const [refreshingGrants, setRefreshingGrants] = useState(false);
+  const [grantDrafts, setGrantDrafts] = useState<
+    Record<
+      string,
+      {
+        title: string;
+        provider: string;
+        amount: string;
+        currency: string;
+        deadline: string;
+        status: OnboardingGrantStatus;
+        owner: string;
+        link: string;
+        notes: string;
+        description: string;
+      }
+    >
+  >({});
+  const [grantEligibilityNotesDraft, setGrantEligibilityNotesDraft] = useState<Record<string, Record<string, string>>>({});
+  const [updatingGrantId, setUpdatingGrantId] = useState<string | null>(null);
+  const [updatingEligibilityKey, setUpdatingEligibilityKey] = useState<string | null>(null);
+  const [deletingGrantId, setDeletingGrantId] = useState<string | null>(null);
+  const [alumni, setAlumni] = useState<OnboardingAlumniSnapshot | null>(null);
+  const [alumniForm, setAlumniForm] = useState({
+    status: "in_program" as OnboardingGraduationStatus,
+    cohort: "",
+    programStartAt: "",
+    graduationDate: "",
+    alumniSince: "",
+    supportOwner: "",
+    primaryMentor: "",
+    currency: "",
+    fundingRaised: "",
+    revenueRunRate: "",
+    jobsCreated: "",
+    impactScore: "",
+    tags: "",
+    notes: "",
+    nextCheckInAt: "",
+  });
+  const [savingAlumni, setSavingAlumni] = useState(false);
+  const [loggingTouchpoint, setLoggingTouchpoint] = useState(false);
+  const [newTouchpoint, setNewTouchpoint] = useState({
+    recordedAt: "",
+    channel: "call",
+    highlight: "",
+    notes: "",
+    sentiment: "positive" as "positive" | "neutral" | "negative",
+    nextActionAt: "",
+    nextActionOwner: "",
+    fundingRaised: "",
+    revenueRunRate: "",
+    jobsCreated: "",
+  });
 
   useEffect(() => {
     if (checklist) {
@@ -168,6 +330,91 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
   }, [milestones]);
 
   useEffect(() => {
+    if (!alumni) {
+      return;
+    }
+    setAlumniForm({
+      status: alumni.status,
+      cohort: alumni.cohort ?? "",
+      programStartAt: alumni.programStartAt ? alumni.programStartAt.substring(0, 10) : "",
+      graduationDate: alumni.graduationDate ? alumni.graduationDate.substring(0, 10) : "",
+      alumniSince: alumni.alumniSince ? alumni.alumniSince.substring(0, 10) : "",
+      supportOwner: alumni.supportOwner ?? "",
+      primaryMentor: alumni.primaryMentor ?? "",
+      currency: alumni.currency ?? "",
+      fundingRaised:
+        alumni.fundingRaised !== undefined && alumni.fundingRaised !== null
+          ? String(alumni.fundingRaised)
+          : "",
+      revenueRunRate:
+        alumni.revenueRunRate !== undefined && alumni.revenueRunRate !== null
+          ? String(alumni.revenueRunRate)
+          : "",
+      jobsCreated:
+        alumni.jobsCreated !== undefined && alumni.jobsCreated !== null
+          ? String(alumni.jobsCreated)
+          : "",
+      impactScore:
+        alumni.impactScore !== undefined && alumni.impactScore !== null
+          ? String(alumni.impactScore)
+          : "",
+      tags: (alumni.tags ?? []).join(", "),
+      notes: alumni.notes ?? "",
+      nextCheckInAt: alumni.nextCheckInAt ? alumni.nextCheckInAt.substring(0, 10) : "",
+    });
+  }, [alumni]);
+
+  useEffect(() => {
+    if (!grants) {
+      return;
+    }
+
+    const drafts: Record<
+      string,
+      {
+        title: string;
+        provider: string;
+        amount: string;
+        currency: string;
+        deadline: string;
+        status: OnboardingGrantStatus;
+        owner: string;
+        link: string;
+        notes: string;
+        description: string;
+      }
+    > = {};
+    const eligibilityDrafts: Record<string, Record<string, string>> = {};
+
+    grants.opportunities.forEach((opportunity) => {
+      drafts[opportunity.id] = {
+        title: opportunity.title ?? "",
+        provider: opportunity.provider ?? "",
+        amount:
+          opportunity.amount !== undefined && opportunity.amount !== null
+            ? String(opportunity.amount)
+            : "",
+        currency: opportunity.currency ?? "",
+        deadline: opportunity.deadline ? opportunity.deadline.substring(0, 10) : "",
+        status: opportunity.status,
+        owner: opportunity.owner ?? "",
+        link: opportunity.link ?? "",
+        notes: opportunity.notes ?? "",
+        description: opportunity.description ?? "",
+      };
+
+      const noteMap: Record<string, string> = {};
+      opportunity.eligibility.forEach((criterion) => {
+        noteMap[criterion.id] = criterion.notes ?? "";
+      });
+      eligibilityDrafts[opportunity.id] = noteMap;
+    });
+
+    setGrantDrafts(drafts);
+    setGrantEligibilityNotesDraft(eligibilityDrafts);
+  }, [grants]);
+
+  useEffect(() => {
     if (!userId) {
       setError("Missing applicant reference – unable to load workspace.");
       setLoading(false);
@@ -197,7 +444,9 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
         setSubmission(payload.submission);
         setChecklist(payload.checklist);
         setDocuments(payload.documents);
-        setMilestones(payload.milestones);
+    setMilestones(payload.milestones);
+    setGrants(payload.grants);
+    setAlumni(payload.alumni);
       })
       .catch((err) => {
         if (controller.signal.aborted) return;
@@ -265,6 +514,54 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
     );
   }, [milestones]);
 
+  const grantSummary = useMemo(() => {
+    if (!grants) {
+      return { total: 0, dueSoon: 0, overdue: 0, submitted: 0, awarded: 0 };
+    }
+    return {
+      total: grants.signals.total,
+      dueSoon: grants.signals.dueSoon,
+      overdue: grants.signals.overdue,
+      submitted: grants.signals.submitted,
+      awarded: grants.signals.awarded,
+    };
+  }, [grants]);
+
+  const alumniSummary = useMemo(() => {
+    if (!alumni) {
+      return {
+        status: "in_program" as OnboardingGraduationStatus,
+        monthsSinceGraduation: undefined as number | undefined,
+        totalFundingRaised: undefined as number | undefined,
+        jobsCreated: undefined as number | undefined,
+        revenueRunRate: undefined as number | undefined,
+        needsCheckIn: false,
+        checkInLabel: "",
+      };
+    }
+
+    let checkInLabel = "";
+    if (alumni.signals.checkInOverdueByDays !== undefined) {
+      checkInLabel = `Overdue by ${alumni.signals.checkInOverdueByDays} day${alumni.signals.checkInOverdueByDays === 1 ? "" : "s"}`;
+    } else if (alumni.signals.checkInDueInDays !== undefined) {
+      checkInLabel = `Due in ${alumni.signals.checkInDueInDays} day${alumni.signals.checkInDueInDays === 1 ? "" : "s"}`;
+    } else if (alumni.signals.lastTouchpointAt) {
+      checkInLabel = `Last touch ${formatDate(alumni.signals.lastTouchpointAt)}`;
+    } else {
+      checkInLabel = "No touchpoints yet";
+    }
+
+    return {
+      status: alumni.status,
+      monthsSinceGraduation: alumni.signals.monthsSinceGraduation,
+      totalFundingRaised: alumni.signals.totalFundingRaised ?? alumni.fundingRaised,
+      jobsCreated: alumni.signals.jobsCreated ?? alumni.jobsCreated,
+      revenueRunRate: alumni.signals.revenueRunRate ?? alumni.revenueRunRate,
+      needsCheckIn: alumni.signals.needsCheckIn,
+      checkInLabel,
+    };
+  }, [alumni]);
+
   const parseNumberInput = (value: string): number | undefined => {
     const trimmed = value.trim();
     if (!trimmed.length) {
@@ -272,6 +569,11 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
     }
     const parsed = Number(trimmed);
     return Number.isFinite(parsed) ? parsed : undefined;
+  };
+
+  const parseNumberOrNull = (value: string): number | null => {
+    const parsed = parseNumberInput(value);
+    return parsed ?? null;
   };
 
   const handleChecklistChange = async (items: OnboardingChecklistItem[], notes?: string) => {
@@ -538,6 +840,501 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
     }
   };
 
+  const parseGrantEligibilityInput = (value: string): OnboardingGrantEligibilityInput[] => {
+    return value
+      .split(/[\n,;]+/)
+      .map((entry) => entry.trim())
+      .filter((entry) => entry.length > 0)
+      .map((label) => ({ label }));
+  };
+
+  const refreshGrants = () => {
+    setRefreshingGrants(true);
+    fetch(`/api/protected/onboarding/startups/${startupId}/grants`)
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error("Failed to refresh grants");
+        }
+        const payload = (await res.json()) as GrantCatalogResponse;
+        if (!payload.ok) {
+          throw new Error(payload.error ?? "Unable to refresh grants");
+        }
+        setGrants(payload.grants);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Unable to refresh grants");
+      })
+      .finally(() => {
+        setRefreshingGrants(false);
+      });
+  };
+
+  const resetGrantForm = () => {
+    setGrantForm({
+      title: "",
+      provider: "",
+      amount: "",
+      currency: "",
+      deadline: "",
+      link: "",
+      status: "researching" as OnboardingGrantStatus,
+      owner: "",
+      notes: "",
+      description: "",
+    });
+    setGrantEligibilityDraft("");
+  };
+
+  const handleCreateGrantOpportunity = async () => {
+    if (!grantForm.title.trim()) {
+      return;
+    }
+
+    setCreatingGrant(true);
+
+    const amountValue = parseNumberInput(grantForm.amount);
+    const currencyValue = grantForm.currency.trim().toUpperCase();
+
+    const opportunity: OnboardingGrantOpportunityInput = {
+      title: grantForm.title.trim(),
+      provider: grantForm.provider.trim() || undefined,
+      amount: amountValue ?? undefined,
+      currency: currencyValue.length ? currencyValue : undefined,
+      deadline: grantForm.deadline || undefined,
+      status: grantForm.status,
+      link: grantForm.link.trim() || undefined,
+      owner: grantForm.owner.trim() || undefined,
+      notes: grantForm.notes.trim() || undefined,
+      description: grantForm.description.trim() || undefined,
+      eligibility: parseGrantEligibilityInput(grantEligibilityDraft),
+    };
+
+    try {
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/grants`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ opportunity }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to create grant opportunity");
+      }
+
+      const payload = (await res.json()) as GrantCatalogResponse;
+      if (!payload.ok) {
+        throw new Error(payload.error ?? "Unable to create grant opportunity");
+      }
+
+      setGrants(payload.grants);
+      resetGrantForm();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to create grant opportunity");
+    } finally {
+      setCreatingGrant(false);
+    }
+  };
+
+  const handleUpdateGrantOpportunity = async (
+    opportunityId: string,
+    updates: OnboardingGrantOpportunityInput,
+    options?: { skipSpinner?: boolean },
+  ): Promise<void> => {
+    if (!options?.skipSpinner) {
+      setUpdatingGrantId(opportunityId);
+    }
+    try {
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/grants`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ opportunity: { id: opportunityId, ...updates } }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to update grant opportunity");
+      }
+
+      const payload = (await res.json()) as GrantCatalogResponse;
+      if (!payload.ok) {
+        throw new Error(payload.error ?? "Unable to update grant opportunity");
+      }
+
+      setGrants(payload.grants);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to update grant opportunity");
+    } finally {
+      if (!options?.skipSpinner) {
+        setUpdatingGrantId(null);
+      }
+    }
+  };
+
+  const handleGrantDraftChange = (
+    opportunityId: string,
+    field:
+      | "title"
+      | "provider"
+      | "amount"
+      | "currency"
+      | "deadline"
+      | "status"
+      | "owner"
+      | "link"
+      | "notes"
+      | "description",
+    value: string | OnboardingGrantStatus,
+  ) => {
+    setGrantDrafts((prev) => {
+      const current = prev[opportunityId] ?? {
+        title: "",
+        provider: "",
+        amount: "",
+        currency: "",
+        deadline: "",
+        status: "researching" as OnboardingGrantStatus,
+        owner: "",
+        link: "",
+        notes: "",
+        description: "",
+      };
+      return {
+        ...prev,
+        [opportunityId]: {
+          ...current,
+          [field]: field === "status" ? (value as OnboardingGrantStatus) : (value as string),
+        },
+      };
+    });
+  };
+
+  const handleGrantEligibilityNoteChange = (
+    opportunityId: string,
+    eligibilityId: string,
+    value: string,
+  ) => {
+    setGrantEligibilityNotesDraft((prev) => ({
+      ...prev,
+      [opportunityId]: {
+        ...(prev[opportunityId] ?? {}),
+        [eligibilityId]: value,
+      },
+    }));
+  };
+
+  const handleResetGrantDraft = (opportunityId: string) => {
+    if (!grants) {
+      return;
+    }
+
+    const opportunity = grants.opportunities.find((item) => item.id === opportunityId);
+    if (!opportunity) {
+      return;
+    }
+
+    setGrantDrafts((prev) => ({
+      ...prev,
+      [opportunityId]: {
+        title: opportunity.title ?? "",
+        provider: opportunity.provider ?? "",
+        amount:
+          opportunity.amount !== undefined && opportunity.amount !== null
+            ? String(opportunity.amount)
+            : "",
+        currency: opportunity.currency ?? "",
+        deadline: opportunity.deadline ? opportunity.deadline.substring(0, 10) : "",
+        status: opportunity.status,
+        owner: opportunity.owner ?? "",
+        link: opportunity.link ?? "",
+        notes: opportunity.notes ?? "",
+        description: opportunity.description ?? "",
+      },
+    }));
+
+    const eligibilityNotes: Record<string, string> = {};
+    opportunity.eligibility.forEach((criterion) => {
+      eligibilityNotes[criterion.id] = criterion.notes ?? "";
+    });
+
+    setGrantEligibilityNotesDraft((prev) => ({
+      ...prev,
+      [opportunityId]: eligibilityNotes,
+    }));
+  };
+
+  const handleSaveGrantDetails = async (opportunityId: string) => {
+    if (!grants) {
+      return;
+    }
+    const draft = grantDrafts[opportunityId];
+    const opportunity = grants.opportunities.find((item) => item.id === opportunityId);
+    if (!draft || !opportunity) {
+      return;
+    }
+
+    const amountValue = parseNumberOrNull(draft.amount);
+    const currencyValue = draft.currency.trim().toUpperCase();
+    const eligibilityNotes = grantEligibilityNotesDraft[opportunityId] ?? {};
+
+    const eligibility: OnboardingGrantEligibilityInput[] = opportunity.eligibility.map((item) => {
+      const note = (eligibilityNotes[item.id] ?? item.notes ?? "").trim();
+      return {
+        id: item.id,
+        label: item.label,
+        met: item.met,
+        notes: note.length ? note : undefined,
+      };
+    });
+
+    await handleUpdateGrantOpportunity(opportunityId, {
+      title: draft.title.trim() || "Untitled opportunity",
+      provider: draft.provider.trim() || undefined,
+      amount: amountValue,
+      currency: currencyValue.length ? currencyValue : undefined,
+      deadline: draft.deadline || undefined,
+      status: draft.status,
+      owner: draft.owner.trim() || undefined,
+      link: draft.link.trim() || undefined,
+      notes: draft.notes.trim() || undefined,
+      description: draft.description.trim() || undefined,
+      eligibility,
+    });
+  };
+
+  const handleToggleGrantEligibility = async (
+    opportunityId: string,
+    eligibilityId: string,
+    met: boolean,
+  ) => {
+    if (!grants) {
+      return;
+    }
+
+    const opportunity = grants.opportunities.find((item) => item.id === opportunityId);
+    if (!opportunity) {
+      return;
+    }
+
+    setUpdatingEligibilityKey(`${opportunityId}:${eligibilityId}`);
+    const notesDraft = grantEligibilityNotesDraft[opportunityId] ?? {};
+
+    try {
+      await handleUpdateGrantOpportunity(
+        opportunityId,
+        {
+          eligibility: opportunity.eligibility.map((item) => {
+            const note = (notesDraft[item.id] ?? item.notes ?? "").trim();
+            return {
+              id: item.id,
+              label: item.label,
+              met: item.id === eligibilityId ? met : item.met,
+              notes: note.length ? note : undefined,
+            };
+          }),
+        },
+        { skipSpinner: true },
+      );
+    } finally {
+      setUpdatingEligibilityKey(null);
+    }
+  };
+
+  const handleDeleteGrantOpportunity = async (opportunityId: string) => {
+    setDeletingGrantId(opportunityId);
+    try {
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/grants`, {
+        method: "DELETE",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ opportunityId }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to delete grant opportunity");
+      }
+
+      const payload = (await res.json()) as GrantCatalogResponse;
+      if (!payload.ok) {
+        throw new Error(payload.error ?? "Unable to delete grant opportunity");
+      }
+
+      setGrants(payload.grants);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to delete grant opportunity");
+    } finally {
+      setDeletingGrantId(null);
+    }
+  };
+
+  const refreshAlumniRecord = () => {
+    fetch(`/api/protected/onboarding/startups/${startupId}/alumni`)
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error("Failed to refresh alumni profile");
+        }
+        const payload = (await res.json()) as {
+          ok: boolean;
+          alumni: OnboardingAlumniSnapshot;
+          error?: string;
+        };
+        if (!payload.ok) {
+          throw new Error(payload.error ?? "Unable to refresh alumni profile");
+        }
+        setAlumni(payload.alumni);
+      })
+      .catch((err) => {
+        setError(err instanceof Error ? err.message : "Unable to refresh alumni profile");
+      });
+  };
+
+  const handleSaveAlumni = async () => {
+    setSavingAlumni(true);
+    const tags = alumniForm.tags
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter((tag) => tag.length > 0);
+
+    const update: OnboardingAlumniUpdateInput = {
+      status: alumniForm.status,
+      cohort: alumniForm.cohort,
+      programStartAt: alumniForm.programStartAt,
+      graduationDate: alumniForm.graduationDate,
+      alumniSince: alumniForm.alumniSince,
+      supportOwner: alumniForm.supportOwner,
+      primaryMentor: alumniForm.primaryMentor,
+      currency: alumniForm.currency,
+      notes: alumniForm.notes,
+      nextCheckInAt: alumniForm.nextCheckInAt,
+      tags,
+      fundingRaised: parseNumberOrNull(alumniForm.fundingRaised),
+      revenueRunRate: parseNumberOrNull(alumniForm.revenueRunRate),
+      jobsCreated: parseNumberOrNull(alumniForm.jobsCreated),
+      impactScore: parseNumberOrNull(alumniForm.impactScore),
+    };
+
+    try {
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/alumni`, {
+        method: "PUT",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ update }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to save alumni profile");
+      }
+
+      const payload = (await res.json()) as {
+        ok: boolean;
+        alumni: OnboardingAlumniSnapshot;
+        error?: string;
+      };
+
+      if (!payload.ok) {
+        throw new Error(payload.error ?? "Unable to save alumni profile");
+      }
+
+      setAlumni(payload.alumni);
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save alumni profile");
+    } finally {
+      setSavingAlumni(false);
+    }
+  };
+
+  const resetTouchpointDraft = () => {
+    setNewTouchpoint((prev) => ({
+      ...prev,
+      recordedAt: "",
+      highlight: "",
+      notes: "",
+      nextActionAt: "",
+      nextActionOwner: "",
+      fundingRaised: "",
+      revenueRunRate: "",
+      jobsCreated: "",
+    }));
+  };
+
+  const handleLogTouchpoint = async () => {
+    setLoggingTouchpoint(true);
+
+    const touchpoint: OnboardingAlumniTouchpointInput = {
+      recordedAt: newTouchpoint.recordedAt || undefined,
+      channel: newTouchpoint.channel as OnboardingAlumniTouchpointInput["channel"],
+      highlight: newTouchpoint.highlight || undefined,
+      notes: newTouchpoint.notes || undefined,
+      sentiment: newTouchpoint.sentiment,
+      nextActionAt: newTouchpoint.nextActionAt || undefined,
+      nextActionOwner: newTouchpoint.nextActionOwner || undefined,
+    };
+
+    const metrics: OnboardingAlumniMetricInput[] = [];
+    const fundingMetric = parseNumberInput(newTouchpoint.fundingRaised);
+    if (fundingMetric !== undefined) {
+      metrics.push({
+        key: "funding_raised",
+        label: "Funding raised",
+        value: fundingMetric,
+        unit: alumniForm.currency || undefined,
+      });
+    }
+
+    const revenueMetric = parseNumberInput(newTouchpoint.revenueRunRate);
+    if (revenueMetric !== undefined) {
+      metrics.push({
+        key: "revenue_run_rate",
+        label: "Revenue run rate",
+        value: revenueMetric,
+        unit: alumniForm.currency || undefined,
+      });
+    }
+
+    const jobsMetric = parseNumberInput(newTouchpoint.jobsCreated);
+    if (jobsMetric !== undefined) {
+      metrics.push({
+        key: "jobs_created",
+        label: "Jobs created",
+        value: jobsMetric,
+      });
+    }
+
+    try {
+      const res = await fetch(`/api/protected/onboarding/startups/${startupId}/alumni`, {
+        method: "POST",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ touchpoint, metrics: metrics.length ? metrics : undefined }),
+      });
+
+      if (!res.ok) {
+        throw new Error("Failed to log touchpoint");
+      }
+
+      const payload = (await res.json()) as {
+        ok: boolean;
+        alumni: OnboardingAlumniSnapshot;
+        error?: string;
+      };
+
+      if (!payload.ok) {
+        throw new Error(payload.error ?? "Unable to log touchpoint");
+      }
+
+      setAlumni(payload.alumni);
+      resetTouchpointDraft();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to log touchpoint");
+    } finally {
+      setLoggingTouchpoint(false);
+    }
+  };
+
   const refreshDocuments = () => {
     fetch(`/api/protected/onboarding/startups/${startupId}/documents`)
       .then(async (res) => {
@@ -635,9 +1432,11 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
     );
   }
 
-  if (!submission || !checklist || !milestones) {
+  if (!submission || !checklist || !milestones || !grants || !alumni) {
     return null;
   }
+
+  const currencyCode = alumni.currency ?? (alumniForm.currency.trim().length ? alumniForm.currency.trim() : undefined);
 
   return (
     <main className="space-y-8 p-8">
@@ -1300,6 +2099,963 @@ export default function StartupWorkspacePage({ params, searchParams }: PageProps
             </ul>
           </div>
         )}
+      </section>
+
+      <section className="space-y-6 rounded-2xl border border-slate-800/70 bg-slate-950/60 p-6">
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-slate-100">Grants &amp; funding opportunities</h2>
+            <p className="text-sm text-slate-400">
+              Monitor aligned grants, track eligibility, and stay ahead of deadlines for non-dilutive funding.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={refreshGrants}
+              disabled={refreshingGrants}
+              className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {refreshingGrants ? "Refreshing…" : "Refresh"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Total opportunities</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-100">{grantSummary.total}</p>
+            <p className="text-sm text-slate-400">Logged for this startup</p>
+          </div>
+          <div className="rounded-xl border border-blue-500/40 bg-blue-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-200">Due in 14 days</p>
+            <p className="mt-2 text-2xl font-semibold text-blue-100">{grantSummary.dueSoon}</p>
+            <p className="text-sm text-blue-200/80">Upcoming deadlines</p>
+          </div>
+          <div className="rounded-xl border border-red-500/40 bg-red-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-red-200">Overdue</p>
+            <p className="mt-2 text-2xl font-semibold text-red-100">{grantSummary.overdue}</p>
+            <p className="text-sm text-red-200/80">Past deadline without submission</p>
+          </div>
+          <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-200">Awards secured</p>
+            <p className="mt-2 text-2xl font-semibold text-emerald-100">{grantSummary.awarded}</p>
+            <p className="text-sm text-emerald-200/80">Converted to funding</p>
+          </div>
+        </div>
+
+        <p className="text-xs text-slate-500">
+          Submitted &amp; awaiting decision: {grantSummary.submitted} application
+          {grantSummary.submitted === 1 ? "" : "s"}.
+        </p>
+
+        <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-950/40 p-5">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Record new opportunity</h3>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Title
+              <input
+                value={grantForm.title}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, title: event.target.value }))}
+                placeholder="e.g. Climate Innovation Challenge"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Provider (optional)
+              <input
+                value={grantForm.provider}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, provider: event.target.value }))}
+                placeholder="e.g. Department of Energy"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Amount (optional)
+              <input
+                value={grantForm.amount}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, amount: event.target.value }))}
+                placeholder="50000"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Currency (ISO)
+              <input
+                value={grantForm.currency}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, currency: event.target.value }))}
+                placeholder="USD"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm uppercase text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Deadline (optional)
+              <input
+                type="date"
+                value={grantForm.deadline}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, deadline: event.target.value }))}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Status
+              <select
+                value={grantForm.status}
+                onChange={(event) =>
+                  setGrantForm((prev) => ({
+                    ...prev,
+                    status: event.target.value as OnboardingGrantStatus,
+                  }))
+                }
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              >
+                {GRANT_STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              External link (optional)
+              <input
+                value={grantForm.link}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, link: event.target.value }))}
+                placeholder="https://grant-brief.example.com"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Owner (optional)
+              <input
+                value={grantForm.owner}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, owner: event.target.value }))}
+                placeholder="Ops lead or founder"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Notes (optional)
+              <input
+                value={grantForm.notes}
+                onChange={(event) => setGrantForm((prev) => ({ ...prev, notes: event.target.value }))}
+                placeholder="Key focus or submission strategy"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Eligibility (one per line)
+            <textarea
+              value={grantEligibilityDraft}
+              onChange={(event) => setGrantEligibilityDraft(event.target.value)}
+              rows={4}
+              placeholder={"e.g. HQ in Andhra Pradesh\nRevenue < $5M\nUniversity-affiliated team"}
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+          <div className="flex justify-end gap-3">
+            <button
+              type="button"
+              onClick={resetGrantForm}
+              className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70"
+            >
+              Clear
+            </button>
+            <button
+              type="button"
+              onClick={handleCreateGrantOpportunity}
+              disabled={creatingGrant || !grantForm.title.trim()}
+              className="rounded-full border border-emerald-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-emerald-200 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {creatingGrant ? "Recording…" : "Add opportunity"}
+            </button>
+          </div>
+        </div>
+
+        <div className="space-y-4">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Active opportunities</h3>
+          {grants.opportunities.length === 0 ? (
+            <p className="text-sm text-slate-400">No grant opportunities logged yet. Use the form above to add your first record.</p>
+          ) : (
+            <ul className="space-y-4">
+              {grants.opportunities.map((grant) => {
+                const deadlineLabel = grant.deadline ? formatDate(grant.deadline) : "No deadline set";
+                const daysUntil = grant.signals.daysUntilDeadline ?? undefined;
+                const deadlineHint = (() => {
+                  if (!grant.deadline) {
+                    return "No deadline set";
+                  }
+                  if (grant.signals.isOverdue) {
+                    const overdueDays = daysUntil !== undefined ? Math.abs(daysUntil) : 0;
+                    return overdueDays > 0
+                      ? `Overdue by ${overdueDays} day${overdueDays === 1 ? "" : "s"}`
+                      : "Overdue";
+                  }
+                  if (daysUntil !== undefined) {
+                    return `Due in ${daysUntil} day${daysUntil === 1 ? "" : "s"}`;
+                  }
+                  return "Deadline approaching";
+                })();
+                const amountLabel = formatCurrency(grant.amount, grant.currency ?? currencyCode);
+                const statusLabel = getGrantStatusLabel(grant.status);
+                const draft = grantDrafts[grant.id] ?? {
+                  title: grant.title ?? "",
+                  provider: grant.provider ?? "",
+                  amount:
+                    grant.amount !== undefined && grant.amount !== null
+                      ? String(grant.amount)
+                      : "",
+                  currency: grant.currency ?? "",
+                  deadline: grant.deadline ? grant.deadline.substring(0, 10) : "",
+                  status: grant.status,
+                  owner: grant.owner ?? "",
+                  link: grant.link ?? "",
+                  notes: grant.notes ?? "",
+                  description: grant.description ?? "",
+                };
+                const eligibilityNotesDraftMap = grantEligibilityNotesDraft[grant.id] ?? {};
+                const isUpdating = updatingGrantId === grant.id;
+                const isDeleting = deletingGrantId === grant.id;
+                return (
+                  <li key={grant.id} className="space-y-4 rounded-xl border border-slate-800 bg-slate-950/50 p-5">
+                    <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+                      <div className="space-y-2">
+                        <div className="flex flex-wrap items-center gap-2 text-xs text-slate-400">
+                          <span
+                            className={`rounded-full px-3 py-1 text-[11px] uppercase tracking-wide ${GRANT_STATUS_BADGE[grant.status]}`}
+                          >
+                            {statusLabel}
+                          </span>
+                          {draft.provider && (
+                            <span className="rounded-full border border-slate-800 px-3 py-1 text-[11px] uppercase tracking-wide text-slate-300">
+                              {draft.provider}
+                            </span>
+                          )}
+                          {draft.owner && (
+                            <span className="rounded-full border border-slate-800 px-3 py-1 text-[11px] uppercase tracking-wide text-slate-300">
+                              Owner {draft.owner}
+                            </span>
+                          )}
+                          <span
+                            className={`rounded-full border px-3 py-1 text-[11px] uppercase tracking-wide ${
+                              grant.signals.eligibilityComplete
+                                ? "border-emerald-500/50 text-emerald-200"
+                                : "border-slate-700 text-slate-300"
+                            }`}
+                          >
+                            {grant.signals.eligibilityComplete
+                              ? "Eligibility ready"
+                              : `${grant.signals.unmetEligibilityCount} requirement${grant.signals.unmetEligibilityCount === 1 ? "" : "s"} open`}
+                          </span>
+                        </div>
+                        <p className="text-lg font-semibold text-slate-100">
+                          {draft.title.length ? draft.title : "Untitled opportunity"}
+                        </p>
+                        {draft.notes.trim().length > 0 && (
+                          <p className="text-sm text-slate-300">{draft.notes}</p>
+                        )}
+                        {draft.description.trim().length > 0 && (
+                          <p className="text-sm text-slate-400">{draft.description}</p>
+                        )}
+                        <p className="text-xs text-slate-500">
+                          Updated {formatDateTime(grant.lastActivityAt ?? grant.updatedAt)}
+                        </p>
+                      </div>
+                      <div className="flex flex-wrap items-end justify-end gap-6">
+                        <div className="flex flex-col items-end">
+                          <span className="text-xs uppercase tracking-wide text-slate-500">Potential award</span>
+                          <span className="text-2xl font-semibold text-slate-100">{amountLabel}</span>
+                        </div>
+                        <div className="flex flex-col items-end">
+                          <span className="text-xs uppercase tracking-wide text-slate-500">Deadline</span>
+                          <span
+                            className={`text-2xl font-semibold ${
+                              grant.signals.isOverdue ? "text-red-200" : "text-slate-100"
+                            }`}
+                          >
+                            {deadlineLabel}
+                          </span>
+                          <span className="text-xs text-slate-400">{deadlineHint}</span>
+                        </div>
+                      </div>
+                    </div>
+
+                    <div className="flex flex-wrap items-center gap-3">
+                      <label className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        Status
+                        <select
+                          value={draft.status}
+                          onChange={(event) => {
+                            const nextStatus = event.target.value as OnboardingGrantStatus;
+                            handleGrantDraftChange(grant.id, "status", nextStatus);
+                            void handleUpdateGrantOpportunity(grant.id, { status: nextStatus });
+                          }}
+                          disabled={isUpdating || isDeleting}
+                          className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+                        >
+                          {GRANT_STATUS_OPTIONS.map((option) => (
+                            <option key={option.value} value={option.value}>
+                              {option.label}
+                            </option>
+                          ))}
+                        </select>
+                      </label>
+                      {draft.link.trim().length > 0 && (
+                        <a
+                          href={draft.link}
+                          target="_blank"
+                          rel="noreferrer"
+                          className="rounded-full border border-blue-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:bg-blue-500/10"
+                        >
+                          View brief
+                        </a>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => handleDeleteGrantOpportunity(grant.id)}
+                        disabled={isDeleting}
+                        className="rounded-full border border-red-500/60 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-red-200 transition hover:bg-red-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                      >
+                        {isDeleting ? "Removing…" : "Remove"}
+                      </button>
+                    </div>
+
+                    <div className="space-y-3 rounded-lg border border-slate-800/70 bg-slate-950/40 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Opportunity details</p>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Title
+                          <input
+                            value={draft.title}
+                            onChange={(event) => handleGrantDraftChange(grant.id, "title", event.target.value)}
+                            placeholder="Grant title"
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Provider (optional)
+                          <input
+                            value={draft.provider}
+                            onChange={(event) => handleGrantDraftChange(grant.id, "provider", event.target.value)}
+                            placeholder="Issuing agency"
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Amount (optional)
+                          <input
+                            value={draft.amount}
+                            onChange={(event) => handleGrantDraftChange(grant.id, "amount", event.target.value)}
+                            placeholder="50000"
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Currency (ISO)
+                          <input
+                            value={draft.currency}
+                            onChange={(event) => handleGrantDraftChange(grant.id, "currency", event.target.value)}
+                            placeholder="USD"
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm uppercase text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Deadline (optional)
+                          <input
+                            type="date"
+                            value={draft.deadline}
+                            onChange={(event) => handleGrantDraftChange(grant.id, "deadline", event.target.value)}
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          Owner (optional)
+                          <input
+                            value={draft.owner}
+                            onChange={(event) => handleGrantDraftChange(grant.id, "owner", event.target.value)}
+                            placeholder="Ops lead or founder"
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                          External link (optional)
+                          <input
+                            value={draft.link}
+                            onChange={(event) => handleGrantDraftChange(grant.id, "link", event.target.value)}
+                            placeholder="https://grant-brief.example.com"
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+                      <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        Notes (optional)
+                        <textarea
+                          value={draft.notes}
+                          onChange={(event) => handleGrantDraftChange(grant.id, "notes", event.target.value)}
+                          rows={3}
+                          placeholder="Key focus or submission strategy"
+                          className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                        />
+                      </label>
+                      <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                        Description (optional)
+                        <textarea
+                          value={draft.description}
+                          onChange={(event) => handleGrantDraftChange(grant.id, "description", event.target.value)}
+                          rows={4}
+                          placeholder="Short overview or reviewer context"
+                          className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                        />
+                      </label>
+                      <div className="flex justify-end gap-3">
+                        <button
+                          type="button"
+                          onClick={() => handleResetGrantDraft(grant.id)}
+                          disabled={isUpdating || isDeleting}
+                          className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          Reset
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => handleSaveGrantDetails(grant.id)}
+                          disabled={isUpdating || isDeleting}
+                          className="rounded-full border border-blue-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+                        >
+                          {isUpdating ? "Saving…" : "Save updates"}
+                        </button>
+                      </div>
+                    </div>
+
+                    <div className="space-y-2 rounded-lg border border-slate-800/70 bg-slate-950/40 p-4">
+                      <p className="text-xs font-semibold uppercase tracking-wide text-slate-400">Eligibility checklist</p>
+                      {grant.eligibility.length === 0 ? (
+                        <p className="text-sm text-slate-400">No eligibility criteria logged yet.</p>
+                      ) : (
+                        <ul className="space-y-3">
+                          {grant.eligibility.map((criterion) => {
+                            const eligibilityKey = `${grant.id}:${criterion.id}`;
+                            const noteDraft = eligibilityNotesDraftMap[criterion.id] ?? "";
+                            const isSavingCriterion = updatingEligibilityKey === eligibilityKey;
+                            return (
+                              <li key={criterion.id} className="space-y-2 rounded-lg border border-slate-800/60 bg-slate-950/50 p-3">
+                                <div className="flex items-start gap-3">
+                                  <input
+                                    type="checkbox"
+                                    checked={criterion.met}
+                                    onChange={(event) =>
+                                      handleToggleGrantEligibility(grant.id, criterion.id, event.target.checked)
+                                    }
+                                    disabled={isUpdating || isDeleting || isSavingCriterion}
+                                    className="mt-1 h-4 w-4 rounded border border-slate-600 bg-slate-900 text-emerald-400 focus:ring-blue-500"
+                                  />
+                                  <div className="flex-1">
+                                    <p className="text-sm text-slate-100">{criterion.label}</p>
+                                    <p className="text-xs text-slate-500">
+                                      {criterion.met ? "Requirement met" : "Open requirement"}
+                                    </p>
+                                  </div>
+                                </div>
+                                <textarea
+                                  value={noteDraft}
+                                  onChange={(event) =>
+                                    handleGrantEligibilityNoteChange(grant.id, criterion.id, event.target.value)
+                                  }
+                                  rows={3}
+                                  placeholder="Capture support notes or documents needed"
+                                  className="w-full rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-xs text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                                  disabled={isDeleting}
+                                />
+                                {isSavingCriterion && (
+                                  <p className="text-[11px] uppercase tracking-wide text-blue-300">Updating…</p>
+                                )}
+                              </li>
+                            );
+                          })}
+                        </ul>
+                      )}
+                      {grant.eligibility.length > 0 && (
+                        <p className="text-[11px] text-slate-500">
+                          Update notes above and use “Save updates” to persist eligibility commentary.
+                        </p>
+                      )}
+                    </div>
+                  </li>
+                );
+              })}
+            </ul>
+          )}
+        </div>
+      </section>
+
+      <section className="space-y-6 rounded-2xl border border-slate-800/70 bg-slate-950/60 p-6">
+        <div className="flex flex-col gap-2 md:flex-row md:items-start md:justify-between">
+          <div className="space-y-1">
+            <h2 className="text-lg font-semibold text-slate-100">Graduation &amp; alumni impact</h2>
+            <p className="text-sm text-slate-400">
+              Track post-program outcomes, raise timely check-ins, and capture alumni momentum for long-term impact.
+            </p>
+          </div>
+          <div className="flex flex-wrap items-center gap-3">
+            <button
+              type="button"
+              onClick={refreshAlumniRecord}
+              className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70"
+            >
+              Refresh
+            </button>
+            <button
+              type="button"
+              onClick={handleSaveAlumni}
+              disabled={savingAlumni}
+              className="rounded-full border border-emerald-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-emerald-200 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {savingAlumni ? "Saving…" : "Save profile"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-5">
+          <div className="rounded-xl border border-slate-800 bg-slate-950/70 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Status</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-100">
+              {GRADUATION_STATUS_OPTIONS.find((option) => option.value === alumniSummary.status)?.label ?? alumniSummary.status}
+            </p>
+            <p className="text-sm text-slate-400">
+              {alumniSummary.monthsSinceGraduation !== undefined
+                ? `${alumniSummary.monthsSinceGraduation} month${alumniSummary.monthsSinceGraduation === 1 ? "" : "s"} since graduation`
+                : "Awaiting graduation"}
+            </p>
+          </div>
+          <div className="rounded-xl border border-emerald-500/40 bg-emerald-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-emerald-200">Funding raised</p>
+            <p className="mt-2 text-2xl font-semibold text-emerald-100">
+              {formatCurrency(alumniSummary.totalFundingRaised, currencyCode)}
+            </p>
+            <p className="text-sm text-emerald-200/80">Lifetime total</p>
+          </div>
+          <div className="rounded-xl border border-blue-500/40 bg-blue-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-blue-200">Revenue run rate</p>
+            <p className="mt-2 text-2xl font-semibold text-blue-100">
+              {formatCurrency(alumniSummary.revenueRunRate, currencyCode)}
+            </p>
+            <p className="text-sm text-blue-200/80">Most recent</p>
+          </div>
+          <div className="rounded-xl border border-amber-500/40 bg-amber-500/5 p-4">
+            <p className="text-xs font-semibold uppercase tracking-wide text-amber-200">Jobs created</p>
+            <p className="mt-2 text-2xl font-semibold text-amber-100">
+              {formatNumber(alumniSummary.jobsCreated)}
+            </p>
+            <p className="text-sm text-amber-200/80">Since graduation</p>
+          </div>
+          <div
+            className={`rounded-xl border p-4 ${
+              alumniSummary.needsCheckIn
+                ? "border-purple-500/60 bg-purple-500/10 shadow-inner shadow-purple-900/10"
+                : "border-slate-800 bg-slate-950/70"
+            }`}
+          >
+            <p className="text-xs font-semibold uppercase tracking-wide text-slate-500">Next check-in</p>
+            <p
+              className={`mt-2 text-2xl font-semibold ${
+                alumniSummary.needsCheckIn ? "text-purple-100" : "text-slate-100"
+              }`}
+            >
+              {alumniSummary.checkInLabel}
+            </p>
+            <p className="text-sm text-slate-400">
+              {alumni.signals.touchpointCount} touchpoint
+              {alumni.signals.touchpointCount === 1 ? "" : "s"} logged
+            </p>
+          </div>
+        </div>
+
+        <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-950/40 p-5">
+          <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Program journey</h3>
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Status
+              <select
+                value={alumniForm.status}
+                onChange={(event) =>
+                  setAlumniForm((prev) => ({
+                    ...prev,
+                    status: event.target.value as OnboardingGraduationStatus,
+                  }))
+                }
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              >
+                {GRADUATION_STATUS_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Cohort
+              <input
+                value={alumniForm.cohort}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, cohort: event.target.value }))}
+                placeholder="Summer 2025"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Tags (comma separated)
+              <input
+                value={alumniForm.tags}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, tags: event.target.value }))}
+                placeholder="Climate, DeepTech"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Program start
+              <input
+                type="date"
+                value={alumniForm.programStartAt}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, programStartAt: event.target.value }))}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Graduation date
+              <input
+                type="date"
+                value={alumniForm.graduationDate}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, graduationDate: event.target.value }))}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Alumni since
+              <input
+                type="date"
+                value={alumniForm.alumniSince}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, alumniSince: event.target.value }))}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-3">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Support owner
+              <input
+                value={alumniForm.supportOwner}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, supportOwner: event.target.value }))}
+                placeholder="Program ops lead"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Primary mentor
+              <input
+                value={alumniForm.primaryMentor}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, primaryMentor: event.target.value }))}
+                placeholder="Lead mentor name"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Next check-in
+              <input
+                type="date"
+                value={alumniForm.nextCheckInAt}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, nextCheckInAt: event.target.value }))}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-4">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Currency (ISO)
+              <input
+                value={alumniForm.currency}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, currency: event.target.value }))}
+                placeholder="USD"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm uppercase text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Funding raised
+              <input
+                type="number"
+                value={alumniForm.fundingRaised}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, fundingRaised: event.target.value }))}
+                placeholder="500000"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Revenue run rate
+              <input
+                type="number"
+                value={alumniForm.revenueRunRate}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, revenueRunRate: event.target.value }))}
+                placeholder="75000"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Jobs created
+              <input
+                type="number"
+                value={alumniForm.jobsCreated}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, jobsCreated: event.target.value }))}
+                placeholder="12"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+          <div className="grid gap-3 md:grid-cols-2">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Impact score (0-100)
+              <input
+                type="number"
+                min={0}
+                max={100}
+                step={0.1}
+                value={alumniForm.impactScore}
+                onChange={(event) => setAlumniForm((prev) => ({ ...prev, impactScore: event.target.value }))}
+                placeholder="85"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <div className="space-y-2 text-xs uppercase tracking-wide text-slate-400">
+              <span className="font-semibold">Active tags</span>
+              {alumni.tags && alumni.tags.length > 0 ? (
+                <div className="flex flex-wrap gap-2">
+                  {alumni.tags.map((tag) => (
+                    <span key={tag} className="rounded-full border border-slate-700 px-3 py-1 text-[11px] text-slate-200">
+                      {tag}
+                    </span>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-slate-500 normal-case">No tags yet.</p>
+              )}
+            </div>
+          </div>
+          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+            Notes
+            <textarea
+              value={alumniForm.notes}
+              onChange={(event) => setAlumniForm((prev) => ({ ...prev, notes: event.target.value }))}
+              rows={4}
+              placeholder="Summarize post-program support, key wins, or long-term commitments."
+              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+            />
+          </label>
+          <div className="flex justify-end">
+            <button
+              type="button"
+              onClick={handleSaveAlumni}
+              disabled={savingAlumni}
+              className="rounded-full border border-emerald-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-emerald-200 transition hover:bg-emerald-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+            >
+              {savingAlumni ? "Saving…" : "Save profile"}
+            </button>
+          </div>
+        </div>
+
+        <div className="grid gap-4 lg:grid-cols-2">
+          <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-950/40 p-5">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Log new touchpoint</h3>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Recorded at
+                <input
+                  type="datetime-local"
+                  value={newTouchpoint.recordedAt}
+                  onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, recordedAt: event.target.value }))}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Channel
+                <select
+                  value={newTouchpoint.channel}
+                  onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, channel: event.target.value }))}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+                >
+                  {TOUCHPOINT_CHANNEL_OPTIONS.map((option) => (
+                    <option key={option.value} value={option.value}>
+                      {option.label}
+                    </option>
+                  ))}
+                </select>
+              </label>
+            </div>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Sentiment
+              <select
+                value={newTouchpoint.sentiment}
+                onChange={(event) =>
+                  setNewTouchpoint((prev) => ({
+                    ...prev,
+                    sentiment: event.target.value as "positive" | "neutral" | "negative",
+                  }))
+                }
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              >
+                {TOUCHPOINT_SENTIMENT_OPTIONS.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Highlight
+              <input
+                value={newTouchpoint.highlight}
+                onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, highlight: event.target.value }))}
+                placeholder="Investor update, customer launch, etc."
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Notes
+              <textarea
+                value={newTouchpoint.notes}
+                onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, notes: event.target.value }))}
+                rows={4}
+                placeholder="Key discussion points, commitments, or risks."
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+            <div className="grid gap-3 md:grid-cols-3">
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Funding (+)
+                <input
+                  type="number"
+                  value={newTouchpoint.fundingRaised}
+                  onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, fundingRaised: event.target.value }))}
+                  placeholder="250000"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Revenue (+)
+                <input
+                  type="number"
+                  value={newTouchpoint.revenueRunRate}
+                  onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, revenueRunRate: event.target.value }))}
+                  placeholder="12000"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Jobs (+)
+                <input
+                  type="number"
+                  value={newTouchpoint.jobsCreated}
+                  onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, jobsCreated: event.target.value }))}
+                  placeholder="3"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+            </div>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Follow-up on
+                <input
+                  type="datetime-local"
+                  value={newTouchpoint.nextActionAt}
+                  onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, nextActionAt: event.target.value }))}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+                Follow-up owner
+                <input
+                  value={newTouchpoint.nextActionOwner}
+                  onChange={(event) => setNewTouchpoint((prev) => ({ ...prev, nextActionOwner: event.target.value }))}
+                  placeholder="ops@incubator.local"
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+                />
+              </label>
+            </div>
+            <div className="flex justify-end gap-3">
+              <button
+                type="button"
+                onClick={resetTouchpointDraft}
+                className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70"
+              >
+                Clear
+              </button>
+              <button
+                type="button"
+                onClick={handleLogTouchpoint}
+                disabled={loggingTouchpoint}
+                className="rounded-full border border-blue-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:bg-blue-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                {loggingTouchpoint ? "Logging…" : "Log touchpoint"}
+              </button>
+            </div>
+          </div>
+          <div className="space-y-4 rounded-xl border border-slate-800/80 bg-slate-950/40 p-5">
+            <h3 className="text-sm font-semibold uppercase tracking-wide text-slate-400">Recent touchpoints</h3>
+            {alumni.touchpoints.length === 0 ? (
+              <p className="text-sm text-slate-400">No alumni touchpoints logged yet.</p>
+            ) : (
+              <ul className="space-y-3">
+                {alumni.touchpoints.slice(0, 8).map((touchpoint) => {
+                  const channelLabel = TOUCHPOINT_CHANNEL_OPTIONS.find((option) => option.value === (touchpoint.channel ?? "other"))?.label ?? touchpoint.channel ?? "Other";
+                  const sentimentClass = touchpoint.sentiment ? TOUCHPOINT_SENTIMENT_BADGE[touchpoint.sentiment] : "text-slate-400";
+                  return (
+                    <li key={touchpoint.id} className="space-y-2 rounded-lg border border-slate-800 bg-slate-950/50 p-4">
+                      <div className="flex flex-wrap items-center justify-between gap-3">
+                        <p className="text-sm font-semibold text-slate-100">
+                          {touchpoint.highlight ?? "Touchpoint"}
+                        </p>
+                        <span className="text-xs text-slate-500">{formatDateTime(touchpoint.recordedAt)}</span>
+                      </div>
+                      <div className="flex flex-wrap items-center gap-2 text-[11px] uppercase tracking-wide text-slate-400">
+                        {touchpoint.channel && (
+                          <span className="rounded-full border border-slate-800 px-3 py-1">{channelLabel}</span>
+                        )}
+                        {touchpoint.sentiment && (
+                          <span className={`rounded-full border border-slate-800 px-3 py-1 ${sentimentClass}`}>
+                            {touchpoint.sentiment.toUpperCase()}
+                          </span>
+                        )}
+                        {touchpoint.recordedBy && (
+                          <span className="rounded-full border border-slate-800 px-3 py-1">
+                            By {touchpoint.recordedBy}
+                          </span>
+                        )}
+                      </div>
+                      {touchpoint.notes && (
+                        <p className="whitespace-pre-line text-sm text-slate-300">{touchpoint.notes}</p>
+                      )}
+                      {touchpoint.nextActionAt && (
+                        <p className="text-xs text-purple-200">
+                          Follow-up {formatDateTime(touchpoint.nextActionAt)}
+                          {touchpoint.nextActionOwner ? ` · ${touchpoint.nextActionOwner}` : ""}
+                        </p>
+                      )}
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </div>
+        </div>
       </section>
 
       <section className="space-y-4 rounded-2xl border border-slate-800/70 bg-slate-950/60 p-6">
