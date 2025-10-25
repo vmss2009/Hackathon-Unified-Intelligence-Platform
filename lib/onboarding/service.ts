@@ -7,6 +7,7 @@ import s3 from "@/lib/storage/storage";
 import {
   OnboardingAttachment,
   OnboardingField,
+  OnboardingFieldOption,
   OnboardingFieldResponse,
   OnboardingForm,
   OnboardingScoringConfig,
@@ -18,6 +19,7 @@ import {
   OnboardingSection,
   OnboardingSubmission,
   OnboardingSubmissionScore,
+  OnboardingSubmissionManualScoreInput,
   OnboardingSubmissionFilters,
   OnboardingSubmissionResolvedField,
   OnboardingSubmissionSummary,
@@ -256,10 +258,22 @@ export const saveOnboardingSubmission = async (
 ): Promise<OnboardingSubmission> => {
   const id = randomUUID();
   const submittedAt = new Date().toISOString();
+  const autoScore = submission.score
+    ? {
+        ...submission.score,
+        source: submission.score.source ?? "auto",
+        updatedAt: submittedAt,
+        updatedBy: submission.userId,
+      }
+    : undefined;
+
   const record: OnboardingSubmission = {
     id,
     submittedAt,
     ...submission,
+    score: autoScore,
+    scoreAuto: autoScore,
+    scoreManual: undefined,
   };
 
   await prisma.onboardingSubmissionRecord.create({
@@ -284,6 +298,42 @@ const submissionRecordToSubmission = (row: {
   payload: Prisma.JsonValue | null;
 }): OnboardingSubmission => {
   const payload = (row.payload as OnboardingSubmission | null) ?? ({} as OnboardingSubmission);
+  const normalizeScore = (
+    score: OnboardingSubmissionScore | undefined,
+    fallback: "auto" | "manual",
+  ): OnboardingSubmissionScore | undefined => {
+    if (!score) {
+      return undefined;
+    }
+    if (score.source) {
+      return { ...score };
+    }
+    return { ...score, source: fallback };
+  };
+
+  const storedScore = payload.score as OnboardingSubmissionScore | undefined;
+  const storedAuto = normalizeScore(
+    (payload.scoreAuto as OnboardingSubmissionScore | undefined) ?? undefined,
+    "auto",
+  );
+  const storedManual = normalizeScore(
+    (payload.scoreManual as OnboardingSubmissionScore | undefined) ?? undefined,
+    "manual",
+  );
+
+  let scoreAuto = storedAuto;
+  let scoreManual = storedManual;
+  let finalScore = storedScore ? normalizeScore(storedScore, storedManual ? "manual" : "auto") : undefined;
+
+  if (!scoreAuto && finalScore && finalScore.source !== "manual") {
+    scoreAuto = { ...finalScore };
+  }
+  if (!scoreManual && finalScore && finalScore.source === "manual") {
+    scoreManual = { ...finalScore };
+  }
+  if (!finalScore) {
+    finalScore = scoreManual ?? scoreAuto;
+  }
 
   return {
     id: payload.id ?? row.id,
@@ -291,7 +341,9 @@ const submissionRecordToSubmission = (row: {
     formId: payload.formId ?? row.formId,
     submittedAt: payload.submittedAt ?? row.submittedAt.toISOString(),
     responses: (payload.responses ?? []) as OnboardingFieldResponse[],
-    score: payload.score,
+    score: finalScore,
+    scoreAuto,
+    scoreManual,
   };
 };
 
@@ -362,7 +414,7 @@ export const normalizeField = (field: OnboardingField): OnboardingField => ({
   placeholder: field.placeholder?.trim() || undefined,
   options:
     field.type === "select"
-      ? field.options?.map((option) => ({
+      ? field.options?.map((option: OnboardingFieldOption) => ({
           ...option,
           label: option.label.trim(),
           value: option.value.trim(),
@@ -518,13 +570,15 @@ export const evaluateSubmissionScore = (
     thresholdAdvance: scoring.autoAdvanceAt,
     thresholdReject: scoring.autoRejectBelow,
     breakdown,
+    source: "auto",
+    updatedAt: new Date().toISOString(),
   };
 };
 
 const buildFieldRegistry = (form: OnboardingForm) => {
   const registry = new Map<string, { field: OnboardingField; section: OnboardingSection }>();
   form.sections.forEach((section) => {
-    section.fields.forEach((field) => {
+    section.fields.forEach((field: OnboardingField) => {
       registry.set(field.id, { field, section });
     });
   });
@@ -627,17 +681,24 @@ const buildSubmissionSummary = (
   const stageValues = responseToStrings(stageResponse?.value ?? null);
   const stageValue = stageValues[0];
   const stageLabel = stageValue
-    ? stageFieldMeta?.options?.find((option) => option.value === stageValue)?.label ?? stageValue
+    ? stageFieldMeta?.options?.find((option: OnboardingFieldOption) => option.value === stageValue)?.label ?? stageValue
     : undefined;
   const companyName = responseToStrings(nameResponse?.value ?? null)[0];
-  const status = record.score?.status ?? "review";
+  const autoScore =
+    record.scoreAuto ?? (record.score && record.score.source !== "manual" ? record.score : undefined);
+  const manualScore =
+    record.scoreManual ?? (record.score && record.score.source === "manual" ? record.score : undefined);
+  const finalScore = manualScore ?? record.score ?? autoScore;
+  const status = finalScore?.status ?? "review";
 
   return {
     id: record.id,
     formId: record.formId,
     userId: record.userId,
     submittedAt: record.submittedAt,
-    score: record.score,
+    score: finalScore,
+    scoreAuto: autoScore,
+    scoreManual: manualScore,
     status,
     companyName,
     companyStage:
@@ -651,6 +712,34 @@ const buildSubmissionSummary = (
   };
 };
 
+const createSubmissionSummaryContext = (form: OnboardingForm) => {
+  const registry = buildFieldRegistry(form);
+  const stageFieldId = guessStageFieldId(registry);
+  const nameFieldId = guessNameFieldId(registry);
+  const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
+
+  const summarize = (record: OnboardingSubmission) => {
+    const resolvedResponses = (record.responses ?? []).map((response) =>
+      resolveResponse(response, registry),
+    );
+    return buildSubmissionSummary(record, resolvedResponses, stageFieldMeta, stageFieldId, nameFieldId);
+  };
+
+  return {
+    summarize,
+    stageOptions: stageFieldMeta?.options ?? [],
+    stageFieldId,
+  };
+};
+
+export const summarizeOnboardingSubmission = (
+  form: OnboardingForm,
+  submission: OnboardingSubmission,
+): OnboardingSubmissionSummary => {
+  const context = createSubmissionSummaryContext(form);
+  return context.summarize(submission);
+};
+
 export const listOnboardingSubmissions = async (
   form: OnboardingForm,
   filters: OnboardingSubmissionFilters = {},
@@ -658,24 +747,13 @@ export const listOnboardingSubmissions = async (
   const rows = await prisma.onboardingSubmissionRecord.findMany({
     orderBy: { submittedAt: "desc" },
   });
-  const registry = buildFieldRegistry(form);
-  const stageFieldId = guessStageFieldId(registry);
-  const nameFieldId = guessNameFieldId(registry);
-  const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
+  const summaryContext = createSubmissionSummaryContext(form);
+  const submissions: OnboardingSubmissionSummary[] = rows.map((row) =>
+    summaryContext.summarize(submissionRecordToSubmission(row)),
+  );
 
-  const submissions: OnboardingSubmissionSummary[] = [];
-  for (const row of rows) {
-    const record = submissionRecordToSubmission(row);
-    const resolvedResponses = (record.responses ?? []).map((response) =>
-      resolveResponse(response, registry),
-    );
-
-    submissions.push(
-      buildSubmissionSummary(record, resolvedResponses, stageFieldMeta, stageFieldId, nameFieldId),
-    );
-  }
-
-  const stageOptions = stageFieldMeta?.options ?? [];
+  const stageOptions = summaryContext.stageOptions;
+  const stageFieldId = summaryContext.stageFieldId;
 
   const minScoreFilter = filters.minScore;
   const maxScoreFilter = filters.maxScore;
@@ -838,22 +916,131 @@ export const getOnboardingSubmissionDetail = async (
     return null;
   }
 
+  const summaryContext = createSubmissionSummaryContext(form);
   const record = submissionRecordToSubmission(row);
-  const registry = buildFieldRegistry(form);
-  const stageFieldId = guessStageFieldId(registry);
-  const nameFieldId = guessNameFieldId(registry);
-  const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
-  const resolvedResponses = (record.responses ?? []).map((response) =>
-    resolveResponse(response, registry),
-  );
+  return summaryContext.summarize(record);
+};
 
-  return buildSubmissionSummary(
-    record,
-    resolvedResponses,
-    stageFieldMeta,
-    stageFieldId,
-    nameFieldId,
-  );
+export const setManualSubmissionScore = async (
+  submissionId: string,
+  reviewerId: string,
+  input: OnboardingSubmissionManualScoreInput,
+): Promise<OnboardingSubmission> => {
+  const row = await prisma.onboardingSubmissionRecord.findUnique({
+    where: { id: submissionId },
+  });
+
+  if (!row) {
+    throw new Error("Submission not found");
+  }
+
+  const existing = submissionRecordToSubmission(row);
+  const autoScore =
+    existing.scoreAuto ?? (existing.score && existing.score.source !== "manual" ? existing.score : undefined);
+  const baseline = existing.scoreManual ?? autoScore ?? existing.score;
+
+  const cleanTotalRaw =
+    input.total !== undefined ? ensureNumber(input.total) : baseline?.total ?? 0;
+  const cleanTotal = cleanTotalRaw !== undefined && cleanTotalRaw >= 0 ? cleanTotalRaw : 0;
+  const cleanAwardedRaw = ensureNumber(input.awarded);
+  const cleanAwarded = cleanAwardedRaw !== undefined && cleanAwardedRaw >= 0 ? cleanAwardedRaw : 0;
+  const percentageOverride =
+    input.percentage !== undefined ? ensureNumber(input.percentage) : undefined;
+  const percentage =
+    percentageOverride !== undefined && percentageOverride >= 0
+      ? Number(percentageOverride.toFixed(2))
+      : cleanTotal > 0
+        ? Number(((cleanAwarded / cleanTotal) * 100).toFixed(2))
+        : 0;
+
+  const breakdown = input.breakdown ?? baseline?.breakdown ?? [];
+  const nowIso = new Date().toISOString();
+
+  const manualScore: OnboardingSubmissionScore = {
+    total: cleanTotal,
+    awarded: cleanAwarded,
+    percentage,
+    status: input.status,
+    thresholdAdvance: baseline?.thresholdAdvance,
+    thresholdReject: baseline?.thresholdReject,
+    breakdown,
+    source: "manual",
+    updatedAt: nowIso,
+    updatedBy: reviewerId,
+    note: input.note?.trim() || undefined,
+  };
+
+  const next: OnboardingSubmission = {
+    ...existing,
+    score: manualScore,
+    scoreManual: manualScore,
+    scoreAuto: autoScore,
+  };
+
+  const payload = { ...next } as Record<string, unknown>;
+  if (!payload.scoreAuto) {
+    delete payload.scoreAuto;
+  }
+  if (!payload.scoreManual) {
+    delete payload.scoreManual;
+  }
+  if (!payload.score) {
+    delete payload.score;
+  }
+
+  await prisma.onboardingSubmissionRecord.update({
+    where: { id: submissionId },
+    data: {
+      payload: payload as unknown as Prisma.JsonObject,
+      updatedAt: new Date(nowIso),
+    },
+  });
+
+  return next;
+};
+
+export const clearManualSubmissionScore = async (
+  submissionId: string,
+): Promise<OnboardingSubmission> => {
+  const row = await prisma.onboardingSubmissionRecord.findUnique({
+    where: { id: submissionId },
+  });
+
+  if (!row) {
+    throw new Error("Submission not found");
+  }
+
+  const existing = submissionRecordToSubmission(row);
+  const autoScore =
+    existing.scoreAuto ?? (existing.score && existing.score.source !== "manual" ? existing.score : undefined);
+
+  const next: OnboardingSubmission = {
+    ...existing,
+    score: autoScore,
+    scoreManual: undefined,
+    scoreAuto: autoScore,
+  };
+
+  const payload = { ...next } as Record<string, unknown>;
+  if (!payload.scoreManual) {
+    delete payload.scoreManual;
+  }
+  if (!payload.scoreAuto) {
+    delete payload.scoreAuto;
+  }
+  if (!payload.score) {
+    delete payload.score;
+  }
+
+  await prisma.onboardingSubmissionRecord.update({
+    where: { id: submissionId },
+    data: {
+      payload: payload as unknown as Prisma.JsonObject,
+      updatedAt: new Date(),
+    },
+  });
+
+  return next;
 };
 
 export const getOnboardingChecklist = async (

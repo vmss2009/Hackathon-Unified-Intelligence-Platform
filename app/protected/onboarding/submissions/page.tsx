@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import {
   OnboardingSubmissionSummary,
@@ -70,11 +70,273 @@ const formatDate = (value: string) => {
 };
 
 const formatScore = (submission: OnboardingSubmissionSummary) => {
-  const total = submission.score?.total ?? submission.score?.breakdown?.reduce((sum, item) => sum + item.points, 0) ?? 0;
-  const awarded = submission.score?.awarded ?? 0;
-  const percentage = submission.score?.percentage ?? (total > 0 ? Number(((awarded / total) * 100).toFixed(1)) : 0);
+  const score = submission.score ?? submission.scoreManual ?? submission.scoreAuto;
+  const total =
+    score?.total ?? score?.breakdown?.reduce((sum, item) => sum + item.points, 0) ?? 0;
+  const awarded = score?.awarded ?? 0;
+  const percentage = score?.percentage ?? (total > 0 ? Number(((awarded / total) * 100).toFixed(1)) : 0);
   return { total, awarded, percentage };
 };
+
+type ManualScoreEditorProps = {
+  submission: OnboardingSubmissionSummary;
+  onUpdated: (submission: OnboardingSubmissionSummary) => void;
+};
+
+function ManualScoreEditor({ submission, onUpdated }: ManualScoreEditorProps) {
+  const autoScore = submission.scoreAuto;
+  const manualScore = submission.scoreManual;
+  const finalScore = submission.score ?? manualScore ?? autoScore;
+  const baselineBreakdown = manualScore?.breakdown ?? finalScore?.breakdown ?? autoScore?.breakdown ?? [];
+
+  const [statusDraft, setStatusDraft] = useState<StatusOption>(finalScore?.status ?? "review");
+  const [awardedDraft, setAwardedDraft] = useState<string>(
+    finalScore?.awarded !== undefined ? String(finalScore.awarded) : "",
+  );
+  const [totalDraft, setTotalDraft] = useState<string>(
+    finalScore?.total !== undefined ? String(finalScore.total) : "",
+  );
+  const [noteDraft, setNoteDraft] = useState<string>(manualScore?.note ?? "");
+  const [saving, setSaving] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [success, setSuccess] = useState<string | null>(null);
+
+  const hydrateFromSummary = useCallback(
+    (target: OnboardingSubmissionSummary) => {
+      const effective = target.score ?? target.scoreManual ?? target.scoreAuto;
+      setStatusDraft(effective?.status ?? "review");
+      setAwardedDraft(
+        effective?.awarded !== undefined
+          ? String(effective.awarded)
+          : target.scoreAuto?.awarded !== undefined
+          ? String(target.scoreAuto.awarded)
+          : "",
+      );
+      setTotalDraft(
+        effective?.total !== undefined
+          ? String(effective.total)
+          : target.scoreAuto?.total !== undefined
+          ? String(target.scoreAuto.total)
+          : "",
+      );
+      setNoteDraft(target.scoreManual?.note ?? "");
+    },
+    [],
+  );
+
+  useEffect(() => {
+    hydrateFromSummary(submission);
+    setError(null);
+    setSuccess(null);
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [submission.id, submission.score?.updatedAt, submission.scoreManual?.updatedAt, submission.scoreAuto?.updatedAt, submission.status]);
+
+  const handleApply = async () => {
+    const awardedValue = Number(awardedDraft);
+    if (Number.isNaN(awardedValue)) {
+      setError("Awarded points must be a number");
+      setSuccess(null);
+      return;
+    }
+
+    const totalValue = totalDraft.trim().length ? Number(totalDraft) : undefined;
+    if (totalValue !== undefined && Number.isNaN(totalValue)) {
+      setError("Total points must be numeric when provided");
+      setSuccess(null);
+      return;
+    }
+
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await fetch(`/api/protected/onboarding/submissions/${submission.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          status: statusDraft,
+          awarded: awardedValue,
+          total: totalValue,
+          note: noteDraft.trim().length ? noteDraft.trim() : undefined,
+          breakdown: baselineBreakdown.length ? baselineBreakdown : undefined,
+        }),
+      });
+
+      const payload = (await response.json()) as {
+        ok: boolean;
+        submission?: OnboardingSubmissionSummary;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.ok || !payload.submission) {
+        throw new Error(payload.error ?? "Unable to save manual score");
+      }
+
+      onUpdated(payload.submission);
+      hydrateFromSummary(payload.submission);
+      setSuccess("Manual override saved");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to save manual score");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleClear = async () => {
+    setSaving(true);
+    setError(null);
+    setSuccess(null);
+
+    try {
+      const response = await fetch(`/api/protected/onboarding/submissions/${submission.id}`, {
+        method: "PATCH",
+        headers: {
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({ clearOverride: true }),
+      });
+
+      const payload = (await response.json()) as {
+        ok: boolean;
+        submission?: OnboardingSubmissionSummary;
+        error?: string;
+      };
+
+      if (!response.ok || !payload.ok || !payload.submission) {
+        throw new Error(payload.error ?? "Unable to clear manual override");
+      }
+
+      onUpdated(payload.submission);
+      hydrateFromSummary(payload.submission);
+      setSuccess("Manual override cleared");
+    } catch (err) {
+      setError(err instanceof Error ? err.message : "Unable to clear manual override");
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  const handleUseAuto = () => {
+    if (!autoScore) {
+      setError("No auto score available to restore");
+      setSuccess(null);
+      return;
+    }
+    setStatusDraft(autoScore.status);
+    setAwardedDraft(String(autoScore.awarded ?? 0));
+    setTotalDraft(autoScore.total !== undefined ? String(autoScore.total) : "");
+    setNoteDraft("");
+    setError(null);
+    setSuccess("Auto score loaded into form");
+  };
+
+  return (
+    <div className="space-y-4 rounded-lg border border-amber-500/30 bg-amber-500/5 p-4">
+      <div className="flex flex-col gap-2 md:flex-row md:items-center md:justify-between">
+        <h4 className="text-xs font-semibold uppercase tracking-wide text-amber-200">
+          Manual decision controls
+        </h4>
+        {manualScore?.updatedAt && (
+          <span className="text-[11px] text-amber-200/80">
+            Last updated {new Date(manualScore.updatedAt).toLocaleString()}
+            {manualScore.updatedBy ? ` by ${manualScore.updatedBy}` : ""}
+          </span>
+        )}
+      </div>
+      {error && <p className="text-xs text-red-300">{error}</p>}
+      {success && <p className="text-xs text-emerald-300">{success}</p>}
+      <div className="grid gap-3 md:grid-cols-3">
+        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-amber-200/80">
+          Decision
+          <select
+            value={statusDraft}
+            onChange={(event) => setStatusDraft(event.target.value as StatusOption)}
+            className="rounded-md border border-amber-500/40 bg-slate-950 px-3 py-2 text-sm text-amber-100 focus:border-amber-300 focus:outline-none"
+          >
+            {(["advance", "review", "reject"] as StatusOption[]).map((option) => (
+              <option key={option} value={option}>
+                {statusLabels[option]}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-amber-200/80">
+          Awarded points
+          <input
+            type="number"
+            min={0}
+            value={awardedDraft}
+            onChange={(event) => setAwardedDraft(event.target.value)}
+            className="rounded-md border border-amber-500/40 bg-slate-950 px-3 py-2 text-sm text-amber-100 focus:border-amber-300 focus:outline-none"
+          />
+        </label>
+        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-amber-200/80">
+          Total points
+          <input
+            type="number"
+            min={0}
+            value={totalDraft}
+            placeholder={finalScore?.total !== undefined ? String(finalScore.total) : autoScore?.total !== undefined ? String(autoScore.total) : ""}
+            onChange={(event) => setTotalDraft(event.target.value)}
+            className="rounded-md border border-amber-500/40 bg-slate-950 px-3 py-2 text-sm text-amber-100 focus:border-amber-300 focus:outline-none"
+          />
+        </label>
+      </div>
+      <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-amber-200/80">
+        Reviewer note
+        <textarea
+          value={noteDraft}
+          onChange={(event) => setNoteDraft(event.target.value)}
+          placeholder="Add context for this manual decision"
+          className="h-20 rounded-md border border-amber-500/40 bg-slate-950 px-3 py-2 text-sm text-amber-100 focus:border-amber-300 focus:outline-none"
+        />
+      </label>
+      <div className="flex flex-wrap items-center gap-3">
+        <button
+          type="button"
+          onClick={handleApply}
+          disabled={saving}
+          className="rounded-full border border-amber-400/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-amber-100 transition hover:bg-amber-500/10 disabled:opacity-60"
+        >
+          {saving ? "Saving…" : "Save manual decision"}
+        </button>
+        <button
+          type="button"
+          onClick={handleUseAuto}
+          className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-200 transition hover:bg-slate-900/60"
+        >
+          Use auto score
+        </button>
+        <button
+          type="button"
+          onClick={handleClear}
+          disabled={saving || !manualScore}
+          className="rounded-full border border-red-500/60 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-red-200 transition hover:bg-red-500/10 disabled:opacity-60"
+        >
+          Clear manual override
+        </button>
+      </div>
+      <div className="text-[11px] text-amber-200/70">
+        <p>
+          Auto score: {autoScore ? `${autoScore.awarded ?? 0}${autoScore.total ? ` / ${autoScore.total}` : ""}` : "—"}
+        </p>
+        {manualScore && (
+          <p className="mt-1">
+            Manual score: {manualScore.awarded ?? 0}
+            {manualScore.total ? ` / ${manualScore.total}` : ""}
+            {manualScore.status ? ` (${statusLabels[manualScore.status as StatusOption]})` : ""}
+          </p>
+        )}
+        {manualScore?.note && (
+          <p className="mt-1 text-amber-200">Saved note: {manualScore.note}</p>
+        )}
+      </div>
+    </div>
+  );
+}
 
 export default function SubmissionReviewPage() {
   const [filters, setFilters] = useState<FiltersState>(INITIAL_FILTERS);
@@ -174,6 +436,10 @@ export default function SubmissionReviewPage() {
   const toggleExpanded = (id: string) => {
     setExpandedId((current) => (current === id ? null : id));
   };
+
+  const handleSubmissionUpdated = useCallback((updated: OnboardingSubmissionSummary) => {
+    setSubmissions((prev) => prev.map((submission) => (submission.id === updated.id ? updated : submission)));
+  }, []);
 
   const resetFilters = () => {
     setFilters(INITIAL_FILTERS);
@@ -333,8 +599,11 @@ export default function SubmissionReviewPage() {
         ) : (
           <div className="space-y-5">
             {submissions.map((submission) => {
+              const effectiveScore = submission.score ?? submission.scoreManual ?? submission.scoreAuto;
+              const resolvedStatus = (submission.status ?? effectiveScore?.status ?? "review") as StatusOption;
               const { total, awarded, percentage } = formatScore(submission);
               const progress = total > 0 ? Math.min(100, Math.round((awarded / total) * 100)) : 0;
+              const manualOverrideActive = Boolean(submission.scoreManual);
               const companyStageLabel = submission.companyStage
                 ? stageLookup.get(submission.companyStage.value) ?? submission.companyStage.label ?? submission.companyStage.value
                 : "Unknown stage";
@@ -363,10 +632,15 @@ export default function SubmissionReviewPage() {
                     </div>
                     <div className="flex flex-col items-end gap-3">
                       <span
-                        className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${statusStyles[submission.status]}`}
+                        className={`rounded-full border px-3 py-1 text-xs font-semibold uppercase tracking-wide ${statusStyles[resolvedStatus]}`}
                       >
-                        {statusLabels[submission.status]}
+                        {statusLabels[resolvedStatus]}
                       </span>
+                      {manualOverrideActive && (
+                        <span className="text-[11px] uppercase tracking-wide text-amber-200">
+                          Manual override active
+                        </span>
+                      )}
                       <div className="w-full min-w-[200px] space-y-2">
                         <div className="flex items-center justify-between text-xs text-slate-400">
                           <span>Score</span>
@@ -476,13 +750,13 @@ export default function SubmissionReviewPage() {
                         ))}
                       </div>
 
-                      {submission.score && (
+                      {effectiveScore?.breakdown?.length ? (
                         <div className="space-y-3 rounded-lg border border-slate-800/80 bg-slate-950/40 p-4">
                           <h4 className="text-xs font-semibold uppercase tracking-wide text-slate-400">
-                            Scoring breakdown
+                            Scoring breakdown ({effectiveScore.source ?? "auto"})
                           </h4>
                           <ul className="space-y-2">
-                            {submission.score.breakdown.map((item) => (
+                            {effectiveScore.breakdown.map((item) => (
                               <li
                                 key={item.ruleId}
                                 className="flex flex-col gap-1 rounded-md border border-slate-800 bg-slate-950/70 p-3 text-xs text-slate-300"
@@ -500,7 +774,9 @@ export default function SubmissionReviewPage() {
                             ))}
                           </ul>
                         </div>
-                      )}
+                      ) : null}
+
+                      <ManualScoreEditor submission={submission} onUpdated={handleSubmissionUpdated} />
                     </div>
                   )}
                 </article>

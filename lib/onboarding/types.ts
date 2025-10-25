@@ -24,6 +24,47 @@ export type OnboardingSection = {
   fields: OnboardingField[];
 };
 
+export type OnboardingSubmissionScoreSource = "auto" | "manual";
+
+export type OnboardingSubmissionScore = {
+  total: number;
+  awarded: number;
+  percentage: number;
+  status: "advance" | "review" | "reject";
+  thresholdAdvance?: number;
+  thresholdReject?: number;
+  breakdown: {
+    ruleId: string;
+    label: string;
+    points: number;
+    matched: boolean;
+    reason?: string;
+  }[];
+  source?: OnboardingSubmissionScoreSource;
+  updatedAt?: string;
+  updatedBy?: string;
+  note?: string;
+};
+
+export type OnboardingSubmission = {
+  id: string;
+  userId: string;
+  formId: string;
+  submittedAt: string;
+  responses: OnboardingFieldResponse[];
+  score?: OnboardingSubmissionScore;
+  scoreAuto?: OnboardingSubmissionScore;
+  scoreManual?: OnboardingSubmissionScore;
+};
+
+export type OnboardingSubmissionManualScoreInput = {
+  status: OnboardingSubmissionScore["status"];
+  awarded: number;
+  total?: number;
+  percentage?: number;
+  breakdown?: OnboardingSubmissionScore["breakdown"];
+  note?: string;
+};
 export type OnboardingForm = {
   id: string;
   version: number;
@@ -48,15 +89,6 @@ export type OnboardingFieldResponse = {
   attachments?: OnboardingAttachment[];
 };
 
-export type OnboardingSubmission = {
-  id: string;
-  userId: string;
-  formId: string;
-  submittedAt: string;
-  responses: OnboardingFieldResponse[];
-  score?: OnboardingSubmissionScore;
-};
-
 export type OnboardingScoreOperator = "equals" | "contains" | "gte" | "lte";
 
 export type OnboardingScoringRule = {
@@ -76,22 +108,6 @@ export type OnboardingScoringConfig = {
   totalPoints?: number;
 };
 
-export type OnboardingSubmissionScore = {
-  total: number;
-  awarded: number;
-  percentage: number;
-  status: "advance" | "review" | "reject";
-  thresholdAdvance?: number;
-  thresholdReject?: number;
-  breakdown: {
-    ruleId: string;
-    label: string;
-    points: number;
-    matched: boolean;
-    reason?: string;
-  }[];
-};
-
 export type OnboardingSubmissionResolvedField = {
   fieldId: string;
   label: string;
@@ -108,6 +124,8 @@ export type OnboardingSubmissionSummary = {
   userId: string;
   submittedAt: string;
   score?: OnboardingSubmissionScore;
+  scoreAuto?: OnboardingSubmissionScore;
+  scoreManual?: OnboardingSubmissionScore;
   status: OnboardingSubmissionSummaryStatus;
   companyName?: string;
   companyStage?: {
