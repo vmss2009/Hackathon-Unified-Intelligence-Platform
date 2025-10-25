@@ -340,6 +340,35 @@ export const listGrantDisbursements = async (
   };
 };
 
+export type GrantDisbursementSnapshot = {
+  startupId: string;
+  grants: GrantRecord[];
+  grant: GrantRecord;
+  summary: GrantFinancialSummary;
+};
+
+export const getGrantDisbursementSnapshot = async (
+  startupId: string,
+  grantId?: string,
+): Promise<GrantDisbursementSnapshot> => {
+  const catalogRecord = await getGrantCatalog(startupId);
+  const grants = catalogRecord.catalog.grants;
+
+  if (!grants.length) {
+    throw new Error(`No grants configured for startup ${startupId}`);
+  }
+
+  const targetGrant = grantId ? findGrantOrThrow(catalogRecord.catalog, grantId) : grants[0];
+  const summary = summariseGrantFinancials(startupId, targetGrant);
+
+  return {
+    startupId,
+    grants,
+    grant: targetGrant,
+    summary,
+  };
+};
+
 export const requestGrantDisbursement = async (
   startupId: string,
   input: GrantDisbursementRequestInput,
