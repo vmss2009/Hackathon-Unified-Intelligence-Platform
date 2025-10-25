@@ -2,9 +2,7 @@ import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
 import { NextResponse } from "next/server";
 import { PutObjectCommand } from "@aws-sdk/client-s3";
-import { auth } from "@/lib/auth/user";
 import s3 from "@/lib/storage/storage";
-import { enrichAttachment } from "@/lib/onboarding/service";
 
 const getBucketName = () => {
   const bucket = process.env.S3_ONBOARDING_BUCKET;
@@ -17,14 +15,9 @@ const getBucketName = () => {
 export const dynamic = "force-dynamic";
 
 export async function POST(request: Request) {
-  const session = await auth();
-
-  if (!session?.user?.id) {
-    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
-  }
-
   const formData = await request.formData();
   const file = formData.get("file");
+  const applicantId = (formData.get("applicantId") as string | null)?.trim();
 
   if (!file || !(file instanceof File)) {
     return NextResponse.json({ ok: false, error: "File missing" }, { status: 400 });
@@ -33,7 +26,7 @@ export async function POST(request: Request) {
   const bucket = getBucketName();
   const fileId = randomUUID();
   const extension = file.name.includes(".") ? `.${file.name.split(".").pop()}` : "";
-  const key = `uploads/${session.user.id}/${fileId}${extension}`;
+  const key = `uploads/${applicantId || "public"}/${fileId}${extension}`;
   const arrayBuffer = await file.arrayBuffer();
 
   await s3.send(
@@ -49,12 +42,13 @@ export async function POST(request: Request) {
     }),
   );
 
-  const attachment = enrichAttachment({
-    key,
-    name: file.name,
-    size: file.size,
-    contentType: file.type || "application/octet-stream",
+  return NextResponse.json({
+    ok: true,
+    attachment: {
+      key,
+      name: file.name,
+      size: file.size,
+      contentType: file.type || "application/octet-stream",
+    },
   });
-
-  return NextResponse.json({ ok: true, attachment });
 }

@@ -237,13 +237,21 @@ export const normalizeConfig = (form: OnboardingForm): OnboardingForm => ({
 });
 
 export const enrichAttachment = (attachment: OnboardingAttachment): OnboardingAttachment => {
-  const publicBase = process.env.S3_PUBLIC_BASE_URL;
-  if (!publicBase) {
+  const endpoint =
+    process.env.S3_PUBLIC_ENDPOINT ??
+    process.env.S3_PUBLIC_BASE_URL ??
+    process.env.S3_ENDPOINT;
+
+  if (!endpoint) {
     return attachment;
   }
 
+  const base = endpoint.replace(/\/$/, "");
+  const bucket = getBucketName();
+  const baseWithBucket = base.endsWith(`/${bucket}`) ? base : `${base}/${bucket}`;
+
   return {
     ...attachment,
-    url: `${publicBase.replace(/\/$/, "")}/${attachment.key}`,
+    url: `${baseWithBucket}/${attachment.key}`,
   };
 };

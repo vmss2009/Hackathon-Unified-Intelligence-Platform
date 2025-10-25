@@ -59,7 +59,7 @@ export default function Home() {
 
 				<div className="mt-10 flex flex-wrap items-center gap-4">
 					<Link
-						href="/sign-in"
+						href="/onboarding"
 						className="rounded-full border border-emerald-500/70 px-6 py-3 text-sm font-semibold uppercase tracking-wide text-emerald-100 transition hover:bg-emerald-500/10"
 					>
 						Start your application
