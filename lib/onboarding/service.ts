@@ -1,6 +1,6 @@
 import { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import { GetObjectCommand, PutObjectCommand } from "@aws-sdk/client-s3";
+import { GetObjectCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
 import s3 from "@/lib/storage/storage";
 import {
   OnboardingAttachment,
@@ -9,8 +9,12 @@ import {
   OnboardingForm,
   OnboardingScoringConfig,
   OnboardingScoringRule,
+  OnboardingSection,
   OnboardingSubmission,
   OnboardingSubmissionScore,
+  OnboardingSubmissionFilters,
+  OnboardingSubmissionResolvedField,
+  OnboardingSubmissionSummary,
 } from "./types";
 
 const CONFIG_KEY = "config.json";
@@ -492,6 +496,246 @@ export const evaluateSubmissionScore = (
     thresholdAdvance: scoring.autoAdvanceAt,
     thresholdReject: scoring.autoRejectBelow,
     breakdown,
+  };
+};
+
+const listSubmissionKeys = async (bucket: string): Promise<string[]> => {
+  const keys: string[] = [];
+  let continuationToken: string | undefined;
+
+  do {
+    const response = await s3.send(
+      new ListObjectsV2Command({
+        Bucket: bucket,
+        Prefix: "submissions/",
+        ContinuationToken: continuationToken,
+      }),
+    );
+
+    (response.Contents ?? []).forEach((object) => {
+      if (object.Key && object.Key.endsWith(".json")) {
+        keys.push(object.Key);
+      }
+    });
+
+    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
+  } while (continuationToken);
+
+  return keys;
+};
+
+const buildFieldRegistry = (form: OnboardingForm) => {
+  const registry = new Map<string, { field: OnboardingField; section: OnboardingSection }>();
+  form.sections.forEach((section) => {
+    section.fields.forEach((field) => {
+      registry.set(field.id, { field, section });
+    });
+  });
+  return registry;
+};
+
+const guessStageFieldId = (registry: Map<string, { field: OnboardingField; section: OnboardingSection }>) => {
+  for (const [fieldId, meta] of registry.entries()) {
+    const { field } = meta;
+    if (field.type !== "select") {
+      continue;
+    }
+    if (fieldId.includes("stage")) {
+      return fieldId;
+    }
+    if (/stage/i.test(field.label)) {
+      return fieldId;
+    }
+  }
+  return undefined;
+};
+
+const guessNameFieldId = (registry: Map<string, { field: OnboardingField; section: OnboardingSection }>) => {
+  for (const [fieldId, meta] of registry.entries()) {
+    const { field } = meta;
+    if (field.type !== "text" && field.type !== "textarea") {
+      continue;
+    }
+    if (fieldId.includes("name")) {
+      return fieldId;
+    }
+    if (/company/i.test(field.label) && /name/i.test(field.label)) {
+      return fieldId;
+    }
+  }
+  return undefined;
+};
+
+const resolveResponse = (
+  response: OnboardingFieldResponse,
+  registry: Map<string, { field: OnboardingField; section: OnboardingSection }>,
+): OnboardingSubmissionResolvedField => {
+  const meta = registry.get(response.fieldId);
+  const base: OnboardingSubmissionResolvedField = {
+    fieldId: response.fieldId,
+    label: meta?.field.label ?? response.fieldId,
+    type: meta?.field.type ?? "text",
+    value: response.value,
+    attachments: response.attachments?.map(enrichAttachment),
+  };
+  return base;
+};
+
+const responseToStrings = (value: string | string[] | null): string[] => {
+  if (value === null || value === undefined) {
+    return [];
+  }
+  if (Array.isArray(value)) {
+    return value.filter((item) => typeof item === "string" && item.trim().length > 0);
+  }
+  if (typeof value === "string") {
+    return value.trim().length ? [value] : [];
+  }
+  return [];
+};
+
+const matchesQuery = (submission: OnboardingSubmissionSummary, query: string): boolean => {
+  const lowered = query.toLowerCase();
+  const haystack: string[] = [];
+
+  if (submission.companyName) {
+    haystack.push(submission.companyName);
+  }
+  submission.responses.forEach((response) => {
+    responseToStrings(response.value).forEach((value) => haystack.push(value));
+    response.attachments?.forEach((attachment) => {
+      if (attachment.name) {
+        haystack.push(attachment.name);
+      }
+    });
+  });
+
+  return haystack.some((value) => value.toLowerCase().includes(lowered));
+};
+
+export const listOnboardingSubmissions = async (
+  form: OnboardingForm,
+  filters: OnboardingSubmissionFilters = {},
+) => {
+  const bucket = getBucketName();
+  const keys = await listSubmissionKeys(bucket);
+  const registry = buildFieldRegistry(form);
+  const stageFieldId = guessStageFieldId(registry);
+  const nameFieldId = guessNameFieldId(registry);
+  const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
+
+  const submissions: OnboardingSubmissionSummary[] = [];
+
+  for (const key of keys) {
+    try {
+      const object = await s3.send(
+        new GetObjectCommand({
+          Bucket: bucket,
+          Key: key,
+        }),
+      );
+      const raw = await streamToString(object.Body);
+      if (!raw) {
+        continue;
+      }
+      const record = JSON.parse(raw) as OnboardingSubmission;
+
+      const resolvedResponses = (record.responses ?? []).map((response) =>
+        resolveResponse(response, registry),
+      );
+
+      const stageResponse = stageFieldId
+        ? resolvedResponses.find((response) => response.fieldId === stageFieldId)
+        : undefined;
+      const nameResponse = nameFieldId
+        ? resolvedResponses.find((response) => response.fieldId === nameFieldId)
+        : undefined;
+
+      const stageValues = responseToStrings(stageResponse?.value ?? null);
+      const stageValue = stageValues[0];
+      const stageLabel = stageValue
+        ? stageFieldMeta?.options?.find((option) => option.value === stageValue)?.label ?? stageValue
+        : undefined;
+      const companyName = responseToStrings(nameResponse?.value ?? null)[0];
+      const status = record.score?.status ?? "review";
+
+      const submission: OnboardingSubmissionSummary = {
+        id: record.id,
+        formId: record.formId,
+        userId: record.userId,
+        submittedAt: record.submittedAt,
+        score: record.score,
+        status,
+        companyName,
+        companyStage:
+          stageValue !== undefined
+            ? {
+                value: stageValue,
+                label: stageLabel,
+              }
+            : undefined,
+        responses: resolvedResponses,
+      };
+
+      submissions.push(submission);
+    } catch (error) {
+      console.error(`Failed to load submission ${key}`, error);
+    }
+  }
+
+  const stageOptions = stageFieldMeta?.options ?? [];
+
+  const minScoreFilter = filters.minScore;
+  const maxScoreFilter = filters.maxScore;
+  const queryFilter = filters.query?.trim().toLowerCase();
+  const statusFilter = filters.status;
+  const stageFilter = filters.stage?.trim();
+
+  const filtered = submissions.filter((submission) => {
+    const awarded = submission.score?.awarded ?? 0;
+
+    if (statusFilter && submission.status !== statusFilter) {
+      return false;
+    }
+
+    if (stageFilter && submission.companyStage?.value !== stageFilter) {
+      return false;
+    }
+
+    if (minScoreFilter !== undefined && awarded < minScoreFilter) {
+      return false;
+    }
+
+    if (maxScoreFilter !== undefined && awarded > maxScoreFilter) {
+      return false;
+    }
+
+    if (queryFilter && !matchesQuery(submission, queryFilter)) {
+      return false;
+    }
+
+    return true;
+  });
+
+  filtered.sort((a, b) => {
+    const aDate = new Date(a.submittedAt).getTime();
+    const bDate = new Date(b.submittedAt).getTime();
+    return bDate - aDate;
+  });
+
+  const scoreValues = filtered.map((submission) => submission.score?.awarded ?? 0);
+  const scoreMin = scoreValues.length ? Math.min(...scoreValues) : 0;
+  const scoreMax = scoreValues.length ? Math.max(...scoreValues) : 0;
+
+  return {
+    entries: filtered,
+    total: filtered.length,
+    stageFieldId,
+    stageOptions,
+    scoreRange: {
+      min: scoreMin,
+      max: scoreMax,
+    },
   };
 };
 

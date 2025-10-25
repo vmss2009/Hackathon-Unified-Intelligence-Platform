@@ -91,3 +91,36 @@ export type OnboardingSubmissionScore = {
     reason?: string;
   }[];
 };
+
+export type OnboardingSubmissionResolvedField = {
+  fieldId: string;
+  label: string;
+  type: OnboardingFieldType;
+  value: string | string[] | null;
+  attachments?: OnboardingAttachment[];
+};
+
+export type OnboardingSubmissionSummaryStatus = OnboardingSubmissionScore["status"] | "review";
+
+export type OnboardingSubmissionSummary = {
+  id: string;
+  formId: string;
+  userId: string;
+  submittedAt: string;
+  score?: OnboardingSubmissionScore;
+  status: OnboardingSubmissionSummaryStatus;
+  companyName?: string;
+  companyStage?: {
+    value: string;
+    label?: string;
+  };
+  responses: OnboardingSubmissionResolvedField[];
+};
+
+export type OnboardingSubmissionFilters = {
+  status?: OnboardingSubmissionScore["status"];
+  stage?: string;
+  minScore?: number;
+  maxScore?: number;
+  query?: string;
+};

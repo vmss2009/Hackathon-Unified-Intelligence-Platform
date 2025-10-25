@@ -18,25 +18,18 @@ export default function ProtectedPage() {
 	const navItems = useMemo(
 		() => [
 			{
+				title: "Submission Review",
+				description:
+					"Inspect founder submissions with filters, scoring, and full response context.",
+				href: "/protected/onboarding/submissions",
+				label: "Review submissions",
+			},
+			{
 				title: "Onboarding Workspace",
 				description:
 					"Design, publish, and track your startup onboarding flows in real time.",
 				href: "/protected/onboarding",
 				label: "Manage onboarding",
-			},
-			{
-				title: "Public Application",
-				description:
-					"Preview the applicant-facing experience exactly as founders will see it.",
-				href: "/onboarding",
-				label: "Open public form",
-			},
-			{
-				title: "Unified Intelligence Platform",
-				description:
-					"Return to the main overview to explore product capabilities and updates.",
-				href: "/",
-				label: "Visit home",
 			},
 		],
 		[],
@@ -126,7 +119,7 @@ export default function ProtectedPage() {
 				</button>
 			</header>
 
-			<div className="grid gap-4 md:grid-cols-3">
+			<div className="grid gap-4 md:grid-cols-2 xl:grid-cols-4">
 				{navItems.map((item) => (
 					<Link
 						key={item.href}
@@ -143,7 +136,7 @@ export default function ProtectedPage() {
 							{item.label}
 						</span>
 					</Link>
-					))}
+				))}
 			</div>
 		</section>
 	);
