@@ -6,8 +6,7 @@ import { signOut } from "next-auth/react";
 
 type UserProfile = {
 	email: string;
-	firstName: string | null;
-	lastName: string | null;
+	name: string | null;
 };
 
 export default function ProtectedPage() {
@@ -105,7 +104,7 @@ export default function ProtectedPage() {
 			<header className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
 				<div>
 					<h1 className="text-3xl font-semibold text-gray-900">
-						Welcome back{profile?.firstName ? `, ${profile.firstName}` : ""}!
+						Welcome back{profile?.name ? `, ${profile.name}` : ""}!
 					</h1>
 					<p className="text-sm text-gray-500">
 						Choose where you’d like to go next across the Unified Intelligence Platform.

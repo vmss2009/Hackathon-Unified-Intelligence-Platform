@@ -1,11 +1,8 @@
-import { Buffer } from "node:buffer";
+import type { Buffer } from "node:buffer";
 import { randomUUID } from "node:crypto";
-import {
-  GetObjectCommand,
-  HeadObjectCommand,
-  ListObjectsV2Command,
-  PutObjectCommand,
-} from "@aws-sdk/client-s3";
+import { HeadObjectCommand, ListObjectsV2Command, PutObjectCommand } from "@aws-sdk/client-s3";
+import type { Prisma } from "@prisma/client";
+import prisma from "@/lib/db/prisma";
 import s3 from "@/lib/storage/storage";
 import {
   OnboardingAttachment,
@@ -50,13 +47,8 @@ import {
   OnboardingGrantOpportunitySnapshot,
 } from "./types";
 
-const CONFIG_KEY = "config.json";
-const SUBMISSION_PREFIX = "submissions/";
-const CHECKLIST_PREFIX = "checklists/";
 const DOCUMENTS_PREFIX = "documents/";
-const MILESTONES_PREFIX = "milestones/";
-const ALUMNI_PREFIX = "alumni/";
-const GRANTS_PREFIX = "grants/";
+const CONFIG_RECORD_ID = "startup-onboarding-config";
 
 const getBucketName = () => {
   const bucket = process.env.S3_ONBOARDING_BUCKET;
@@ -64,26 +56,6 @@ const getBucketName = () => {
     throw new Error("S3_ONBOARDING_BUCKET is not configured");
   }
   return bucket;
-};
-
-const toBuffer = (value: unknown) =>
-  Buffer.from(JSON.stringify(value, null, 2), "utf-8");
-
-const streamToString = async (stream: any): Promise<string> => {
-  if (!stream) {
-    return "";
-  }
-
-  if (typeof stream.transformToString === "function") {
-    return stream.transformToString();
-  }
-
-  const chunks: Uint8Array[] = [];
-  for await (const chunk of stream) {
-    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : chunk);
-  }
-
-  return Buffer.concat(chunks).toString("utf-8");
 };
 
 const buildDefaultForm = (): OnboardingForm => {
@@ -237,61 +209,51 @@ const buildDefaultForm = (): OnboardingForm => {
 };
 
 export const getOnboardingConfig = async (): Promise<OnboardingForm> => {
-  const bucket = getBucketName();
+  const record = await prisma.onboardingConfig.findUnique({
+    where: { id: CONFIG_RECORD_ID },
+  });
 
-  try {
-    const response = await s3.send(
-      new GetObjectCommand({
-        Bucket: bucket,
-        Key: CONFIG_KEY,
-      }),
-    );
-    const raw = await streamToString(response.Body);
-    if (!raw) {
-      return buildDefaultForm();
-    }
-
-    const parsed = JSON.parse(raw) as OnboardingForm;
-    return normalizeConfig({
-      ...parsed,
-      updatedAt: parsed.updatedAt ?? new Date().toISOString(),
+  if (!record) {
+    const defaultForm = normalizeConfig(buildDefaultForm());
+    await prisma.onboardingConfig.create({
+      data: {
+        id: CONFIG_RECORD_ID,
+        payload: defaultForm as unknown as Prisma.JsonObject,
+        createdAt: new Date(defaultForm.updatedAt),
+      },
     });
-  } catch (error: any) {
-    if (error?.$metadata?.httpStatusCode === 404) {
-      return buildDefaultForm();
-    }
-    if (error?.name === "NoSuchKey") {
-      return buildDefaultForm();
-    }
-    console.error("Failed to read onboarding config", error);
-    throw new Error("Unable to load onboarding configuration");
+    return defaultForm;
   }
+
+  const payload = (record.payload as OnboardingForm | null) ?? buildDefaultForm();
+  return normalizeConfig({
+    ...payload,
+    updatedAt: payload.updatedAt ?? record.updatedAt.toISOString(),
+  });
 };
 
-export const saveOnboardingConfig = async (
-  form: OnboardingForm,
-): Promise<void> => {
-  const bucket = getBucketName();
-  const nextForm: OnboardingForm = {
+export const saveOnboardingConfig = async (form: OnboardingForm): Promise<void> => {
+  const normalized = normalizeConfig({
     ...form,
     updatedAt: new Date().toISOString(),
-  };
-  const normalized = normalizeConfig(nextForm);
+  });
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: CONFIG_KEY,
-      Body: toBuffer(normalized),
-      ContentType: "application/json",
-    }),
-  );
+  await prisma.onboardingConfig.upsert({
+    where: { id: CONFIG_RECORD_ID },
+    update: {
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+    create: {
+      id: CONFIG_RECORD_ID,
+      payload: normalized as unknown as Prisma.JsonObject,
+      createdAt: new Date(normalized.updatedAt),
+    },
+  });
 };
 
 export const saveOnboardingSubmission = async (
   submission: Omit<OnboardingSubmission, "id" | "submittedAt">,
 ): Promise<OnboardingSubmission> => {
-  const bucket = getBucketName();
   const id = randomUUID();
   const submittedAt = new Date().toISOString();
   const record: OnboardingSubmission = {
@@ -300,16 +262,37 @@ export const saveOnboardingSubmission = async (
     ...submission,
   };
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: `${SUBMISSION_PREFIX}${submission.userId}/${id}.json`,
-      Body: toBuffer(record),
-      ContentType: "application/json",
-    }),
-  );
+  await prisma.onboardingSubmissionRecord.create({
+    data: {
+      id,
+      userId: submission.userId,
+      formId: submission.formId,
+      submittedAt: new Date(submittedAt),
+      payload: record as unknown as Prisma.JsonObject,
+      createdAt: new Date(submittedAt),
+    },
+  });
 
   return record;
+};
+
+const submissionRecordToSubmission = (row: {
+  id: string;
+  userId: string;
+  formId: string;
+  submittedAt: Date;
+  payload: Prisma.JsonValue | null;
+}): OnboardingSubmission => {
+  const payload = (row.payload as OnboardingSubmission | null) ?? ({} as OnboardingSubmission);
+
+  return {
+    id: payload.id ?? row.id,
+    userId: payload.userId ?? row.userId,
+    formId: payload.formId ?? row.formId,
+    submittedAt: payload.submittedAt ?? row.submittedAt.toISOString(),
+    responses: (payload.responses ?? []) as OnboardingFieldResponse[],
+    score: payload.score,
+  };
 };
 
 const ensureNumber = (value: unknown): number | undefined => {
@@ -538,31 +521,6 @@ export const evaluateSubmissionScore = (
   };
 };
 
-const listSubmissionKeys = async (bucket: string): Promise<string[]> => {
-  const keys: string[] = [];
-  let continuationToken: string | undefined;
-
-  do {
-    const response = await s3.send(
-      new ListObjectsV2Command({
-        Bucket: bucket,
-        Prefix: SUBMISSION_PREFIX,
-        ContinuationToken: continuationToken,
-      }),
-    );
-
-    (response.Contents ?? []).forEach((object) => {
-      if (object.Key && object.Key.endsWith(".json")) {
-        keys.push(object.Key);
-      }
-    });
-
-    continuationToken = response.IsTruncated ? response.NextContinuationToken : undefined;
-  } while (continuationToken);
-
-  return keys;
-};
-
 const buildFieldRegistry = (form: OnboardingForm) => {
   const registry = new Map<string, { field: OnboardingField; section: OnboardingSection }>();
   form.sections.forEach((section) => {
@@ -697,45 +655,24 @@ export const listOnboardingSubmissions = async (
   form: OnboardingForm,
   filters: OnboardingSubmissionFilters = {},
 ) => {
-  const bucket = getBucketName();
-  const keys = await listSubmissionKeys(bucket);
+  const rows = await prisma.onboardingSubmissionRecord.findMany({
+    orderBy: { submittedAt: "desc" },
+  });
   const registry = buildFieldRegistry(form);
   const stageFieldId = guessStageFieldId(registry);
   const nameFieldId = guessNameFieldId(registry);
   const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
 
   const submissions: OnboardingSubmissionSummary[] = [];
+  for (const row of rows) {
+    const record = submissionRecordToSubmission(row);
+    const resolvedResponses = (record.responses ?? []).map((response) =>
+      resolveResponse(response, registry),
+    );
 
-  for (const key of keys) {
-    try {
-      const object = await s3.send(
-        new GetObjectCommand({
-          Bucket: bucket,
-          Key: key,
-        }),
-      );
-      const raw = await streamToString(object.Body);
-      if (!raw) {
-        continue;
-      }
-      const record = JSON.parse(raw) as OnboardingSubmission;
-
-      const resolvedResponses = (record.responses ?? []).map((response) =>
-        resolveResponse(response, registry),
-      );
-
-      submissions.push(
-        buildSubmissionSummary(
-          record,
-          resolvedResponses,
-          stageFieldMeta,
-          stageFieldId,
-          nameFieldId,
-        ),
-      );
-    } catch (error) {
-      console.error(`Failed to load submission ${key}`, error);
-    }
+    submissions.push(
+      buildSubmissionSummary(record, resolvedResponses, stageFieldMeta, stageFieldId, nameFieldId),
+    );
   }
 
   const stageOptions = stageFieldMeta?.options ?? [];
@@ -893,92 +830,77 @@ export const getOnboardingSubmissionDetail = async (
   submissionId: string,
   userId: string,
 ): Promise<OnboardingSubmissionSummary | null> => {
-  const bucket = getBucketName();
-  const key = `${SUBMISSION_PREFIX}${userId}/${submissionId}.json`;
-  try {
-    const object = await s3.send(
-      new GetObjectCommand({
-        Bucket: bucket,
-        Key: key,
-      }),
-    );
-    const raw = await streamToString(object.Body);
-    if (!raw) {
-      return null;
-    }
+  const row = await prisma.onboardingSubmissionRecord.findUnique({
+    where: { id: submissionId },
+  });
 
-    const record = JSON.parse(raw) as OnboardingSubmission;
-    const registry = buildFieldRegistry(form);
-    const stageFieldId = guessStageFieldId(registry);
-    const nameFieldId = guessNameFieldId(registry);
-    const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
-    const resolvedResponses = (record.responses ?? []).map((response) =>
-      resolveResponse(response, registry),
-    );
-
-    return buildSubmissionSummary(
-      record,
-      resolvedResponses,
-      stageFieldMeta,
-      stageFieldId,
-      nameFieldId,
-    );
-  } catch (error: any) {
-    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
-      return null;
-    }
-    console.error("Failed to load onboarding submission", error);
-    throw new Error("Unable to load onboarding submission");
+  if (!row || row.userId !== userId) {
+    return null;
   }
+
+  const record = submissionRecordToSubmission(row);
+  const registry = buildFieldRegistry(form);
+  const stageFieldId = guessStageFieldId(registry);
+  const nameFieldId = guessNameFieldId(registry);
+  const stageFieldMeta = stageFieldId ? registry.get(stageFieldId)?.field : undefined;
+  const resolvedResponses = (record.responses ?? []).map((response) =>
+    resolveResponse(response, registry),
+  );
+
+  return buildSubmissionSummary(
+    record,
+    resolvedResponses,
+    stageFieldMeta,
+    stageFieldId,
+    nameFieldId,
+  );
 };
 
 export const getOnboardingChecklist = async (
   startupId: string,
 ): Promise<OnboardingChecklist> => {
-  const bucket = getBucketName();
-  const key = `${CHECKLIST_PREFIX}${startupId}.json`;
+  const record = await prisma.onboardingChecklistRecord.findUnique({
+    where: { startupId },
+  });
 
-  try {
-    const object = await s3.send(
-      new GetObjectCommand({
-        Bucket: bucket,
-        Key: key,
-      }),
-    );
-    const raw = await streamToString(object.Body);
-    if (!raw) {
-      return checklistTemplate(startupId);
-    }
-    const parsed = JSON.parse(raw) as OnboardingChecklist;
-    return normalizeChecklist(startupId, parsed);
-  } catch (error: any) {
-    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
-      return checklistTemplate(startupId);
-    }
-    console.error("Failed to load onboarding checklist", error);
-    throw new Error("Unable to load onboarding checklist");
+  if (!record) {
+    const template = checklistTemplate(startupId);
+    await prisma.onboardingChecklistRecord.create({
+      data: {
+        startupId,
+        payload: template as unknown as Prisma.JsonObject,
+        createdAt: new Date(template.createdAt),
+        updatedAt: new Date(template.updatedAt),
+      },
+    });
+    return template;
   }
+
+  return normalizeChecklist(startupId, record.payload as OnboardingChecklist);
 };
 
 export const saveOnboardingChecklist = async (
   startupId: string,
   checklist: OnboardingChecklist,
 ): Promise<OnboardingChecklist> => {
-  const bucket = getBucketName();
   const normalized = normalizeChecklist(startupId, {
     ...checklist,
     startupId,
     updatedAt: new Date().toISOString(),
   });
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: `${CHECKLIST_PREFIX}${startupId}.json`,
-      Body: toBuffer(normalized),
-      ContentType: "application/json",
-    }),
-  );
+  await prisma.onboardingChecklistRecord.upsert({
+    where: { startupId },
+    update: {
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+    create: {
+      startupId,
+      payload: normalized as unknown as Prisma.JsonObject,
+      createdAt: new Date(normalized.createdAt),
+      updatedAt: new Date(normalized.updatedAt),
+    },
+  });
 
   return normalized;
 };
@@ -1304,47 +1226,40 @@ const buildMilestoneSnapshot = (
 const getMilestonePlanInternal = async (
   startupId: string,
 ): Promise<OnboardingMilestonePlan> => {
-  const bucket = getBucketName();
-  const key = `${MILESTONES_PREFIX}${startupId}.json`;
+  const record = await prisma.onboardingMilestonePlanRecord.findUnique({
+    where: { startupId },
+  });
 
-  try {
-    const response = await s3.send(
-      new GetObjectCommand({
-        Bucket: bucket,
-        Key: key,
-      }),
-    );
-    const raw = await streamToString(response.Body);
-    if (!raw) {
-      return milestoneTemplate(startupId);
-    }
-
-    const parsed = JSON.parse(raw) as OnboardingMilestonePlan;
-    return normalizeMilestonePlan(startupId, parsed);
-  } catch (error: any) {
-    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
-      return milestoneTemplate(startupId);
-    }
-    console.error("Failed to load onboarding milestones", error);
-    throw new Error("Unable to load milestone plan");
+  if (!record) {
+    const template = milestoneTemplate(startupId);
+    await prisma.onboardingMilestonePlanRecord.create({
+      data: {
+        startupId,
+        payload: template as unknown as Prisma.JsonObject,
+      },
+    });
+    return template;
   }
+
+  return normalizeMilestonePlan(startupId, record.payload as OnboardingMilestonePlan);
 };
 
 const saveMilestonePlan = async (
   startupId: string,
   plan: OnboardingMilestonePlan,
 ): Promise<OnboardingMilestonePlan> => {
-  const bucket = getBucketName();
   const normalized = normalizeMilestonePlan(startupId, plan);
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: `${MILESTONES_PREFIX}${startupId}.json`,
-      Body: toBuffer(normalized),
-      ContentType: "application/json",
-    }),
-  );
+  await prisma.onboardingMilestonePlanRecord.upsert({
+    where: { startupId },
+    update: {
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+    create: {
+      startupId,
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+  });
 
   return normalized;
 };
@@ -1835,47 +1750,40 @@ const buildAlumniSnapshot = (
 const getAlumniRecordInternal = async (
   startupId: string,
 ): Promise<OnboardingAlumniRecord> => {
-  const bucket = getBucketName();
-  const key = `${ALUMNI_PREFIX}${startupId}.json`;
+  const record = await prisma.onboardingAlumniRecordStorage.findUnique({
+    where: { startupId },
+  });
 
-  try {
-    const response = await s3.send(
-      new GetObjectCommand({
-        Bucket: bucket,
-        Key: key,
-      }),
-    );
-    const raw = await streamToString(response.Body);
-    if (!raw) {
-      return alumniTemplate(startupId);
-    }
-
-    const parsed = JSON.parse(raw) as OnboardingAlumniRecord;
-    return normalizeAlumniRecord(startupId, parsed);
-  } catch (error: any) {
-    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
-      return alumniTemplate(startupId);
-    }
-    console.error("Failed to load alumni record", error);
-    throw new Error("Unable to load alumni profile");
+  if (!record) {
+    const template = alumniTemplate(startupId);
+    await prisma.onboardingAlumniRecordStorage.create({
+      data: {
+        startupId,
+        payload: template as unknown as Prisma.JsonObject,
+      },
+    });
+    return template;
   }
+
+  return normalizeAlumniRecord(startupId, record.payload as OnboardingAlumniRecord);
 };
 
 const saveAlumniRecord = async (
   startupId: string,
   record: OnboardingAlumniRecord,
 ): Promise<OnboardingAlumniRecord> => {
-  const bucket = getBucketName();
   const normalized = normalizeAlumniRecord(startupId, record);
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: `${ALUMNI_PREFIX}${startupId}.json`,
-      Body: toBuffer(normalized),
-      ContentType: "application/json",
-    }),
-  );
+  await prisma.onboardingAlumniRecordStorage.upsert({
+    where: { startupId },
+    update: {
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+    create: {
+      startupId,
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+  });
 
   return normalized;
 };
@@ -2317,47 +2225,40 @@ const buildGrantCatalogSnapshot = (
 const getGrantCatalogInternal = async (
   startupId: string,
 ): Promise<OnboardingGrantCatalog> => {
-  const bucket = getBucketName();
-  const key = `${GRANTS_PREFIX}${startupId}.json`;
+  const record = await prisma.onboardingGrantCatalogRecord.findUnique({
+    where: { startupId },
+  });
 
-  try {
-    const response = await s3.send(
-      new GetObjectCommand({
-        Bucket: bucket,
-        Key: key,
-      }),
-    );
-    const raw = await streamToString(response.Body);
-    if (!raw) {
-      return grantCatalogTemplate(startupId);
-    }
-
-    const parsed = JSON.parse(raw) as OnboardingGrantCatalog;
-    return normalizeGrantCatalog(startupId, parsed);
-  } catch (error: any) {
-    if (error?.$metadata?.httpStatusCode === 404 || error?.name === "NoSuchKey") {
-      return grantCatalogTemplate(startupId);
-    }
-    console.error("Failed to load grant catalog", error);
-    throw new Error("Unable to load grant opportunities");
+  if (!record) {
+    const template = grantCatalogTemplate(startupId);
+    await prisma.onboardingGrantCatalogRecord.create({
+      data: {
+        startupId,
+        payload: template as unknown as Prisma.JsonObject,
+      },
+    });
+    return template;
   }
+
+  return normalizeGrantCatalog(startupId, record.payload as OnboardingGrantCatalog);
 };
 
 const saveGrantCatalog = async (
   startupId: string,
   catalog: OnboardingGrantCatalog,
 ): Promise<OnboardingGrantCatalog> => {
-  const bucket = getBucketName();
   const normalized = normalizeGrantCatalog(startupId, catalog);
 
-  await s3.send(
-    new PutObjectCommand({
-      Bucket: bucket,
-      Key: `${GRANTS_PREFIX}${startupId}.json`,
-      Body: toBuffer(normalized),
-      ContentType: "application/json",
-    }),
-  );
+  await prisma.onboardingGrantCatalogRecord.upsert({
+    where: { startupId },
+    update: {
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+    create: {
+      startupId,
+      payload: normalized as unknown as Prisma.JsonObject,
+    },
+  });
 
   return normalized;
 };
@@ -2598,6 +2499,24 @@ const buildDocumentFromMetadata = (
 export const listOnboardingDocuments = async (
   startupId: string,
 ): Promise<OnboardingDocument[]> => {
+  const stored = await prisma.onboardingDocumentRecord.findMany({
+    where: { startupId },
+    orderBy: { uploadedAt: "desc" },
+  });
+
+  if (stored.length > 0) {
+    return stored.map((record) =>
+      buildDocumentFromMetadata(
+        record.key,
+        record.name,
+        record.size,
+        record.contentType ?? undefined,
+        record.uploadedAt.toISOString(),
+        record.uploadedBy ?? undefined,
+      ),
+    );
+  }
+
   const bucket = getBucketName();
   const prefix = `${DOCUMENTS_PREFIX}${startupId}/`;
 
@@ -2619,17 +2538,52 @@ export const listOnboardingDocuments = async (
           Key: key,
         }),
       );
-  const name = head.Metadata?.originalname ?? key.substring(key.lastIndexOf("/") + 1);
+      const name = head.Metadata?.originalname ?? key.substring(key.lastIndexOf("/") + 1);
       const size = Number(object.Size ?? head.ContentLength ?? 0);
       const uploadedAt = (object.LastModified ?? head.LastModified ?? new Date()).toISOString();
       const contentType = head.ContentType ?? undefined;
-  const uploadedBy = head.Metadata?.uploadedby;
+      const uploadedBy = head.Metadata?.uploadedby;
 
-  return buildDocumentFromMetadata(key, name, size, contentType, uploadedAt, uploadedBy);
+      return buildDocumentFromMetadata(key, name, size, contentType, uploadedAt, uploadedBy);
     }),
   );
 
-  return documents.sort((a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime());
+  const sorted = documents.sort(
+    (a, b) => new Date(b.uploadedAt).getTime() - new Date(a.uploadedAt).getTime(),
+  );
+
+  if (sorted.length > 0) {
+    await Promise.all(
+      sorted.map((document) =>
+        prisma.onboardingDocumentRecord.upsert({
+          where: {
+            startupId_key: {
+              startupId,
+              key: document.key,
+            },
+          },
+          update: {
+            name: document.name,
+            size: document.size,
+            contentType: document.contentType ?? undefined,
+            uploadedAt: new Date(document.uploadedAt),
+            uploadedBy: document.uploadedBy ?? undefined,
+          },
+          create: {
+            startupId,
+            key: document.key,
+            name: document.name,
+            size: document.size,
+            contentType: document.contentType ?? undefined,
+            uploadedAt: new Date(document.uploadedAt),
+            uploadedBy: document.uploadedBy ?? undefined,
+          },
+        }),
+      ),
+    );
+  }
+
+  return sorted;
 };
 
 export const uploadOnboardingDocument = async (
@@ -2639,6 +2593,7 @@ export const uploadOnboardingDocument = async (
   const bucket = getBucketName();
   const safeName = sanitizeFileName(file.name);
   const key = `${DOCUMENTS_PREFIX}${startupId}/${Date.now()}-${randomUUID()}-${safeName}`;
+  const uploadedAtIso = new Date().toISOString();
 
   await s3.send(
     new PutObjectCommand({
@@ -2654,12 +2609,37 @@ export const uploadOnboardingDocument = async (
     }),
   );
 
+  await prisma.onboardingDocumentRecord.upsert({
+    where: {
+      startupId_key: {
+        startupId,
+        key,
+      },
+    },
+    update: {
+      name: file.name,
+      size: file.buffer.length,
+      contentType: file.contentType || undefined,
+      uploadedAt: new Date(uploadedAtIso),
+      uploadedBy: file.uploadedBy ?? undefined,
+    },
+    create: {
+      startupId,
+      key,
+      name: file.name,
+      size: file.buffer.length,
+      contentType: file.contentType || undefined,
+      uploadedAt: new Date(uploadedAtIso),
+      uploadedBy: file.uploadedBy ?? undefined,
+    },
+  });
+
   return buildDocumentFromMetadata(
     key,
     file.name,
     file.buffer.length,
     file.contentType,
-    new Date().toISOString(),
+    uploadedAtIso,
     file.uploadedBy,
   );
 };

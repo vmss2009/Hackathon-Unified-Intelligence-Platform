@@ -33,9 +33,8 @@ export async function PATCH(request: NextRequest) {
 		return NextResponse.json({ ok: false, error: "Invalid request body" }, { status: 400 });
 	}
 
-	const { firstName, lastName } = payload as {
-		firstName?: unknown;
-		lastName?: unknown;
+	const { name } = payload as {
+		name?: unknown;
 	};
 
 	const normalize = (value: unknown) => {
@@ -51,10 +50,9 @@ export async function PATCH(request: NextRequest) {
 		return undefined;
 	};
 
-	const nextFirstName = normalize(firstName);
-	const nextLastName = normalize(lastName);
+	const nextName = normalize(name);
 
-	if (nextFirstName === undefined && nextLastName === undefined) {
+	if (nextName === undefined) {
 		return NextResponse.json(
 			{ ok: false, error: "Nothing to update" },
 			{ status: 400 },
@@ -62,8 +60,7 @@ export async function PATCH(request: NextRequest) {
 	}
 
 	const updated = await updateUserProfile(session!.user!.id!, {
-		firstName: nextFirstName,
-		lastName: nextLastName,
+		name: nextName,
 	});
 
 	return NextResponse.json({ ok: true, profile: updated });

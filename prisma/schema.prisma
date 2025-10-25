@@ -1,5 +1,6 @@
 generator client {
   provider = "prisma-client-js"
+  previewFeatures = ["multiSchema"]
 }
 
 datasource db {
@@ -8,854 +9,94 @@ datasource db {
   schemas  = ["core", "lifecycle", "grants", "facilities", "crm", "comms", "security", "analytics"]
 }
 
-enum StartupStatus {
-  applied
-  active
-  graduated
-  alumni
-  on_hold
+model OnboardingConfig {
+  id        String   @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
   @@schema("core")
 }
 
-enum ApplicationStatus {
-  new
-  in_review
-  accepted
-  rejected
-  waitlist
+model OnboardingSubmissionRecord {
+  id          String   @id @default(uuid())
+  userId      String
+  formId      String
+  submittedAt DateTime
+  payload     Json
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
   @@schema("lifecycle")
 }
 
-enum BookingStatus {
-  pending
-  approved
-  rejected
-  cancelled
-  checked_in
+model OnboardingChecklistRecord {
+  startupId String  @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  @@schema("facilities")
+  @@schema("lifecycle")
 }
 
-enum TaskStatus {
-  open
-  in_progress
-  done
-  cancelled
+model OnboardingMilestonePlanRecord {
+  startupId String  @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  @@schema("core")
+  @@schema("lifecycle")
 }
 
-enum DecisionEnum {
-  yes
-  no
-  maybe
+model OnboardingAlumniRecordStorage {
+  startupId String  @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  @@schema("core")
+  @@schema("lifecycle")
 }
 
-model Incubator {
-  id            String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  name          String
-  type          String?
-  timezone      String   @default("Asia/Kolkata")
-  dataResidency String?  @map("data_residency")
-  settingsJson  Json     @default("{}") @map("settings_json")
-  createdAt     DateTime @default(now()) @map("created_at")
+model OnboardingGrantCatalogRecord {
+  startupId String  @id
+  payload   Json
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
 
-  users               AppUser[]
-  roles               Role[]
-  AuditLog            AuditLog[]
-  Startup             Startup[]
-  Cohort              Cohort[]
-  Application         Application[]
-  KpiDefinition       KpiDefinition[]
-  WorkflowDefinition  WorkflowDefinition[]
-  GrantProgram        GrantProgram[]
-  FinancialLedger     FinancialLedger[]
-  Resource            Resource[]
-  Mentor              Mentor[]
-  Investor            Investor[]
-  Interaction         Interaction[]
-  Announcement        Announcement[]
-  Document            Document[]
-  ReportTemplate      ReportTemplate[]
-  DataRetentionPolicy DataRetentionPolicy[]
-  ApiKey              ApiKey[]
-  EventLog            EventLog[]
-
-  @@map("incubator")
-  @@schema("core")
+  @@schema("grants")
 }
 
-model AppUser {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String   @map("incubator_id") @db.Uuid
-  email       String?  @db.Citext
+model OnboardingDocumentRecord {
+  id         String   @id @default(uuid())
+  startupId  String
+  key        String
+  name       String
+  size       Int
+  contentType String?
+  uploadedAt DateTime @default(now())
+  uploadedBy String?
+  metadata   Json?
+  createdAt  DateTime @default(now())
+  updatedAt  DateTime @updatedAt
+
+  @@schema("lifecycle")
+  @@unique([startupId, key])
+}
+
+model User {
+  id          String   @id @default(uuid())
+  email       String   @unique
   name        String?
   phone       String?
-  status      String?
-  avatarUrl   String?  @map("avatar_url")
-  createdAt   DateTime @default(now()) @map("created_at")
+  avatarUrl   String?
+  timezone    String? @default("UTC")
+  locale      String? @default("en")
+  metadata    Json?
+  isActive    Boolean  @default(true)
+  lastLoginAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
 
-  incubator         Incubator           @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  roles             UserRole[]
-  auditLogs         AuditLog[]
-  tasks             Task[]              @relation("TaskAssignee")
-  ApplicationReview ApplicationReview[]
-  KpiValue          KpiValue[]
-  Booking           Booking[]
-  BookingApproval   BookingApproval[]
-  Checkin           Checkin[]
-  MentorSession     MentorSession[]
-  Interaction       Interaction[]
-  Notification      Notification[]
-
-  @@index([incubatorId])
-  @@map("app_user")
   @@schema("core")
-}
-
-model Role {
-  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String @map("incubator_id") @db.Uuid
-  code        String
-  name        String
-
-  incubator   Incubator        @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  permissions RolePermission[]
-  users       UserRole[]
-
-  @@unique([incubatorId, code])
-  @@map("role")
-  @@schema("security")
-}
-
-model Permission {
-  id          String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  code        String  @unique
-  description String?
-
-  roles RolePermission[]
-
-  @@map("permission")
-  @@schema("security")
-}
-
-model RolePermission {
-  roleId       String @db.Uuid
-  permissionId String @db.Uuid
-
-  role       Role       @relation(fields: [roleId], references: [id], onDelete: Cascade)
-  permission Permission @relation(fields: [permissionId], references: [id], onDelete: Cascade)
-
-  @@id([roleId, permissionId])
-  @@map("role_permission")
-  @@schema("security")
-}
-
-model UserRole {
-  userId String @db.Uuid
-  roleId String @db.Uuid
-
-  user AppUser @relation(fields: [userId], references: [id], onDelete: Cascade)
-  role Role    @relation(fields: [roleId], references: [id], onDelete: Cascade)
-
-  @@id([userId, roleId])
-  @@map("user_role")
-  @@schema("security")
-}
-
-model AuditLog {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String   @map("incubator_id") @db.Uuid
-  actorUserId String?  @map("actor_user_id") @db.Uuid
-  entity      String
-  entityId    String?  @map("entity_id") @db.Uuid
-  action      String
-  beforeJson  Json?    @map("before_json")
-  afterJson   Json?    @map("after_json")
-  ip          String?  @db.Inet
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  incubator Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  actorUser AppUser?  @relation(fields: [actorUserId], references: [id])
-
-  @@index([incubatorId, createdAt])
-  @@map("audit_log")
-  @@schema("security")
-}
-
-model Startup {
-  id          String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String        @map("incubator_id") @db.Uuid
-  legalName   String        @map("legal_name")
-  displayName String?       @map("display_name")
-  udyamNo     String?       @map("udyam_no")
-  gstin       String?
-  industry    String?
-  stage       String?
-  website     String?
-  hqCountry   String?       @map("hq_country")
-  foundedOn   DateTime?     @map("founded_on")
-  status      StartupStatus @default(applied)
-  ownerUserId String?       @map("owner_user_id") @db.Uuid
-  createdAt   DateTime      @default(now()) @map("created_at")
-
-  incubator      Incubator          @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  contacts       StartupContact[]
-  enrollments    CohortEnrollment[]
-  applications   Application[]
-  milestones     Milestone[]
-  kpiValues      KpiValue[]
-  progress       ProgressReport[]
-  grantApps      GrantApplication[]
-  bookings       Booking[]
-  mentorMatches  MentorMatch[]
-  mentorSessions MentorSession[]
-  dealRooms      DealRoom[]
-  complianceDocs ComplianceDoc[]
-
-  @@index([incubatorId, status])
-  @@index([industry])
-  @@index([stage])
-  @@map("startup")
-  @@schema("lifecycle")
-}
-
-model StartupContact {
-  id        String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  startupId String  @map("startup_id") @db.Uuid
-  name      String
-  email     String? @db.Citext
-  phone     String?
-  role      String?
-  isPrimary Boolean @default(false) @map("is_primary")
-
-  startup Startup   @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  Consent Consent[]
-
-  @@map("startup_contact")
-  @@schema("lifecycle")
-}
-
-model Cohort {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String    @map("incubator_id") @db.Uuid
-  name        String
-  programType String?   @map("program_type")
-  startDate   DateTime? @map("start_date")
-  endDate     DateTime? @map("end_date")
-
-  incubator   Incubator          @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  enrollments CohortEnrollment[]
-  Application Application[]
-
-  @@map("cohort")
-  @@schema("lifecycle")
-}
-
-model CohortEnrollment {
-  id         String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  startupId  String  @map("startup_id") @db.Uuid
-  cohortId   String  @map("cohort_id") @db.Uuid
-  status     String?
-  scoresJson Json    @default("{}") @map("scores_json")
-
-  startup Startup @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  cohort  Cohort  @relation(fields: [cohortId], references: [id], onDelete: Cascade)
-
-  @@unique([startupId, cohortId])
-  @@map("cohort_enrollment")
-  @@schema("lifecycle")
-}
-
-model Application {
-  id          String            @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String            @map("incubator_id") @db.Uuid
-  startupId   String?           @map("startup_id") @db.Uuid
-  cohortId    String?           @map("cohort_id") @db.Uuid
-  formVersion String?           @map("form_version")
-  payloadJson Json              @default("{}") @map("payload_json")
-  submittedAt DateTime?         @map("submitted_at")
-  status      ApplicationStatus @default(new)
-
-  incubator Incubator           @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  startup   Startup?            @relation(fields: [startupId], references: [id])
-  cohort    Cohort?             @relation(fields: [cohortId], references: [id])
-  reviews   ApplicationReview[]
-
-  @@index([status], map: "idx_application_status")
-  @@index([incubatorId], map: "idx_application_incubator")
-  @@map("application")
-  @@schema("lifecycle")
-}
-
-model ApplicationReview {
-  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  applicationId  String        @map("application_id") @db.Uuid
-  reviewerUserId String        @map("reviewer_user_id") @db.Uuid
-  scorecardJson  Json          @default("{}") @map("scorecard_json")
-  decision       DecisionEnum?
-  comments       String?
-  createdAt      DateTime      @default(now()) @map("created_at")
-
-  application Application @relation(fields: [applicationId], references: [id], onDelete: Cascade)
-  reviewer    AppUser     @relation(fields: [reviewerUserId], references: [id], onDelete: Cascade)
-
-  @@index([applicationId], map: "idx_app_review_application")
-  @@map("application_review")
-  @@schema("lifecycle")
-}
-
-model Milestone {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  startupId        String    @map("startup_id") @db.Uuid
-  title            String
-  dueDate          DateTime? @map("due_date")
-  status           String
-  kpiTargetsJson   Json      @default("{}") @map("kpi_targets_json")
-  evidenceRequired Boolean   @default(false) @map("evidence_required")
-  createdAt        DateTime  @default(now()) @map("created_at")
-
-  startup         Startup          @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  disbursements   Disbursement[]
-  progressReports ProgressReport[]
-
-  @@index([startupId, status], map: "idx_milestone_startup_status")
-  @@map("milestone")
-  @@schema("lifecycle")
-}
-
-model KpiDefinition {
-  id            String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId   String  @map("incubator_id") @db.Uuid
-  code          String
-  name          String
-  description   String?
-  unit          String?
-  aggregation   String?
-  isRequired    Boolean @default(false) @map("is_required")
-  reportingFreq String? @map("reporting_freq")
-
-  incubator Incubator  @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  values    KpiValue[]
-
-  @@unique([incubatorId, code])
-  @@map("kpi_definition")
-  @@schema("lifecycle")
-}
-
-model KpiValue {
-  id              String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  startupId       String   @map("startup_id") @db.Uuid
-  kpiDefinitionId String   @map("kpi_definition_id") @db.Uuid
-  periodStart     DateTime @map("period_start")
-  periodEnd       DateTime @map("period_end")
-  valueNum        Decimal? @map("value_num") @db.Decimal(18, 4)
-  valueText       String?  @map("value_text")
-  source          String?
-  submittedBy     String?  @map("submitted_by") @db.Uuid
-  submittedAt     DateTime @default(now()) @map("submitted_at")
-
-  startup       Startup       @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  kpiDefinition KpiDefinition @relation(fields: [kpiDefinitionId], references: [id], onDelete: Cascade)
-  submitter     AppUser?      @relation(fields: [submittedBy], references: [id])
-
-  @@unique([startupId, kpiDefinitionId, periodStart])
-  @@index([startupId, periodStart], map: "idx_kpi_value_startup")
-  @@map("kpi_value")
-  @@schema("lifecycle")
-}
-
-model ProgressReport {
-  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  startupId      String   @map("startup_id") @db.Uuid
-  milestoneId    String?  @map("milestone_id") @db.Uuid
-  period         String?
-  summary        String?
-  riskLevel      String?  @map("risk_level")
-  attachmentsCnt Int      @default(0) @map("attachments_cnt")
-  submittedAt    DateTime @default(now()) @map("submitted_at")
-
-  startup   Startup    @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  milestone Milestone? @relation(fields: [milestoneId], references: [id])
-
-  @@map("progress_report")
-  @@schema("lifecycle")
-}
-
-model WorkflowDefinition {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String   @map("incubator_id") @db.Uuid
-  name        String
-  trigger     String?
-  dsl         Json     @default("{}")
-  isActive    Boolean  @default(true) @map("is_active")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  incubator Incubator     @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  runs      WorkflowRun[]
-
-  @@map("workflow_definition")
-  @@schema("core")
-}
-
-model WorkflowRun {
-  id                   String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workflowDefinitionId String    @map("workflow_definition_id") @db.Uuid
-  contextEntity        String    @map("context_entity")
-  contextId            String?   @map("context_id") @db.Uuid
-  status               String?
-  startedAt            DateTime  @default(now()) @map("started_at")
-  endedAt              DateTime? @map("ended_at")
-  logsJson             Json      @default("{}") @map("logs_json")
-
-  definition WorkflowDefinition @relation(fields: [workflowDefinitionId], references: [id], onDelete: Cascade)
-  tasks      Task[]
-
-  @@map("workflow_run")
-  @@schema("core")
-}
-
-model Task {
-  id             String     @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  workflowRunId  String?    @map("workflow_run_id") @db.Uuid
-  assigneeUserId String?    @map("assignee_user_id") @db.Uuid
-  type           String
-  payloadJson    Json       @default("{}") @map("payload_json")
-  dueAt          DateTime?  @map("due_at")
-  status         TaskStatus @default(open)
-  completedAt    DateTime?  @map("completed_at")
-
-  run      WorkflowRun? @relation(fields: [workflowRunId], references: [id])
-  assignee AppUser?     @relation("TaskAssignee", fields: [assigneeUserId], references: [id])
-
-  @@index([assigneeUserId, status], map: "idx_task_assignee_status")
-  @@map("task")
-  @@schema("core")
-}
-
-model GrantProgram {
-  id                  String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId         String    @map("incubator_id") @db.Uuid
-  name                String
-  funder              String?
-  eligibilityJson     Json      @default("{}") @map("eligibility_json")
-  kpiRequirementsJson Json      @default("{}") @map("kpi_requirements_json")
-  applicationDeadline DateTime? @map("application_deadline")
-
-  incubator    Incubator          @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  applications GrantApplication[]
-
-  @@map("grant_program")
-  @@schema("grants")
-}
-
-model GrantApplication {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  grantProgramId String    @map("grant_program_id") @db.Uuid
-  startupId      String    @map("startup_id") @db.Uuid
-  payloadJson    Json      @default("{}") @map("payload_json")
-  status         String
-  score          Decimal?  @db.Decimal(6, 2)
-  decisionAt     DateTime? @map("decision_at")
-  createdAt      DateTime  @default(now()) @map("created_at")
-
-  program       GrantProgram   @relation(fields: [grantProgramId], references: [id], onDelete: Cascade)
-  startup       Startup        @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  disbursements Disbursement[]
-
-  @@index([status], map: "idx_grant_app_status")
-  @@map("grant_application")
-  @@schema("grants")
-}
-
-model Disbursement {
-  id                 String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  grantApplicationId String    @map("grant_application_id") @db.Uuid
-  milestoneId        String?   @map("milestone_id") @db.Uuid
-  amount             Decimal   @db.Decimal(14, 2)
-  currency           String    @db.Char(3)
-  approvedBy         String?   @map("approved_by") @db.Uuid
-  approvedAt         DateTime? @map("approved_at")
-  paidAt             DateTime? @map("paid_at")
-  paymentRef         String?   @map("payment_ref")
-
-  application    GrantApplication @relation(fields: [grantApplicationId], references: [id], onDelete: Cascade)
-  milestone      Milestone?       @relation(fields: [milestoneId], references: [id])
-  complianceDocs ComplianceDoc[]
-
-  @@index([paidAt], map: "idx_disb_paid_at")
-  @@map("disbursement")
-  @@schema("grants")
-}
-
-model ComplianceDoc {
-  id             String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  disbursementId String?   @map("disbursement_id") @db.Uuid
-  startupId      String    @map("startup_id") @db.Uuid
-  docType        String    @map("doc_type")
-  fileUrl        String    @map("file_url")
-  verifiedBy     String?   @map("verified_by") @db.Uuid
-  verifiedAt     DateTime? @map("verified_at")
-
-  disbursement Disbursement? @relation(fields: [disbursementId], references: [id])
-  startup      Startup       @relation(fields: [startupId], references: [id], onDelete: Cascade)
-
-  @@map("compliance_doc")
-  @@schema("grants")
-}
-
-model FinancialLedger {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String   @map("incubator_id") @db.Uuid
-  entryType   String   @map("entry_type")
-  refEntity   String?  @map("ref_entity")
-  refId       String?  @map("ref_id") @db.Uuid
-  amount      Decimal  @db.Decimal(14, 2)
-  currency    String   @db.Char(3)
-  occurredAt  DateTime @map("occurred_at")
-
-  incubator Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-
-  @@index([incubatorId, occurredAt], map: "idx_fin_ledger_inc_time")
-  @@map("financial_ledger")
-  @@schema("grants")
-}
-
-model Resource {
-  id               String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId      String  @map("incubator_id") @db.Uuid
-  type             String
-  name             String
-  location         String?
-  capacity         Int?
-  attributesJson   Json    @default("{}") @map("attributes_json")
-  approvalRequired Boolean @default(false) @map("approval_required")
-
-  incubator Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  bookings  Booking[]
-
-  @@map("resource")
-  @@schema("facilities")
-}
-
-model Booking {
-  id                String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  resourceId        String        @map("resource_id") @db.Uuid
-  requestedByUserId String        @map("requested_by_user_id") @db.Uuid
-  startupId         String?       @map("startup_id") @db.Uuid
-  startAt           DateTime      @map("start_at")
-  endAt             DateTime      @map("end_at")
-  status            BookingStatus @default(pending)
-  purpose           String?
-  calendarEventId   String?       @map("calendar_event_id")
-  createdAt         DateTime      @default(now()) @map("created_at")
-
-  resource    Resource          @relation(fields: [resourceId], references: [id], onDelete: Cascade)
-  requestedBy AppUser           @relation(fields: [requestedByUserId], references: [id])
-  startup     Startup?          @relation(fields: [startupId], references: [id])
-  approvals   BookingApproval[]
-  checkins    Checkin[]
-
-  @@map("booking")
-  @@schema("facilities")
-}
-
-model BookingApproval {
-  id             String        @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  bookingId      String        @map("booking_id") @db.Uuid
-  approverUserId String        @map("approver_user_id") @db.Uuid
-  decision       DecisionEnum?
-  decidedAt      DateTime?     @map("decided_at")
-  notes          String?
-
-  booking  Booking @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  approver AppUser @relation(fields: [approverUserId], references: [id])
-
-  @@map("booking_approval")
-  @@schema("facilities")
-}
-
-model Checkin {
-  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  bookingId    String    @map("booking_id") @db.Uuid
-  checkedInAt  DateTime? @map("checked_in_at")
-  checkedOutAt DateTime? @map("checked_out_at")
-  byUserId     String?   @map("by_user_id") @db.Uuid
-
-  booking Booking  @relation(fields: [bookingId], references: [id], onDelete: Cascade)
-  byUser  AppUser? @relation(fields: [byUserId], references: [id])
-
-  @@map("checkin")
-  @@schema("facilities")
-}
-
-model Mentor {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId      String   @map("incubator_id") @db.Uuid
-  name             String
-  email            String?  @db.Citext
-  bio              String?
-  expertiseTags    String[] @map("expertise_tags")
-  availabilityJson Json     @default("{}") @map("availability_json")
-  linkedinUrl      String?  @map("linkedin_url")
-
-  incubator    Incubator       @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  matches      MentorMatch[]
-  sessions     MentorSession[]
-  interactions Interaction[]
-
-  @@index([incubatorId])
-  @@map("mentor")
-  @@schema("crm")
-}
-
-model MentorMatch {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  mentorId    String   @map("mentor_id") @db.Uuid
-  startupId   String   @map("startup_id") @db.Uuid
-  matchReason String?  @map("match_reason")
-  status      String   @default("suggested")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  mentor  Mentor  @relation(fields: [mentorId], references: [id], onDelete: Cascade)
-  startup Startup @relation(fields: [startupId], references: [id], onDelete: Cascade)
-
-  @@unique([mentorId, startupId])
-  @@map("mentor_match")
-  @@schema("crm")
-}
-
-model MentorSession {
-  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  mentorId       String   @map("mentor_id") @db.Uuid
-  startupId      String   @map("startup_id") @db.Uuid
-  scheduledStart DateTime @map("scheduled_start")
-  scheduledEnd   DateTime @map("scheduled_end")
-  notes          String?
-  outcomesJson   Json     @default("{}") @map("outcomes_json")
-  createdBy      String?  @map("created_by") @db.Uuid
-
-  mentor  Mentor   @relation(fields: [mentorId], references: [id], onDelete: Cascade)
-  startup Startup  @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  creator AppUser? @relation(fields: [createdBy], references: [id])
-
-  @@map("mentor_session")
-  @@schema("crm")
-}
-
-model Investor {
-  id           String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId  String   @map("incubator_id") @db.Uuid
-  orgName      String   @map("org_name")
-  contactName  String?  @map("contact_name")
-  email        String?  @db.Citext
-  thesisTags   String[] @map("thesis_tags")
-  checkSizeMin Decimal? @map("check_size_min") @db.Decimal(14, 2)
-  checkSizeMax Decimal? @map("check_size_max") @db.Decimal(14, 2)
-
-  incubator    Incubator     @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  dealRooms    DealRoom[]
-  interactions Interaction[]
-
-  @@map("investor")
-  @@schema("crm")
-}
-
-model DealRoom {
-  id           String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  startupId    String    @map("startup_id") @db.Uuid
-  investorId   String    @map("investor_id") @db.Uuid
-  accessLevel  String?   @map("access_level")
-  openedAt     DateTime  @default(now()) @map("opened_at")
-  lastViewedAt DateTime? @map("last_viewed_at")
-
-  startup  Startup  @relation(fields: [startupId], references: [id], onDelete: Cascade)
-  investor Investor @relation(fields: [investorId], references: [id], onDelete: Cascade)
-
-  @@unique([startupId, investorId])
-  @@map("deal_room")
-  @@schema("crm")
-}
-
-model Interaction {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String   @map("incubator_id") @db.Uuid
-  subject     String?
-  type        String
-  relatedType String   @map("related_type")
-  relatedId   String   @map("related_id") @db.Uuid
-  body        String?
-  occurredAt  DateTime @map("occurred_at")
-  createdBy   String?  @map("created_by") @db.Uuid
-
-  incubator  Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  creator    AppUser?  @relation(fields: [createdBy], references: [id])
-  Mentor     Mentor?   @relation(fields: [mentorId], references: [id])
-  mentorId   String?   @db.Uuid
-  Investor   Investor? @relation(fields: [investorId], references: [id])
-  investorId String?   @db.Uuid
-
-  @@index([incubatorId, occurredAt], map: "idx_interaction_inc_time")
-  @@map("interaction")
-  @@schema("comms")
-}
-
-model Announcement {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String   @map("incubator_id") @db.Uuid
-  title       String
-  body        String
-  audience    String
-  publishedAt DateTime @default(now()) @map("published_at")
-
-  incubator Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-
-  @@map("announcement")
-  @@schema("comms")
-}
-
-model Notification {
-  id              String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  recipientUserId String    @map("recipient_user_id") @db.Uuid
-  channel         String
-  templateCode    String?   @map("template_code")
-  payloadJson     Json      @default("{}") @map("payload_json")
-  sentAt          DateTime? @map("sent_at")
-  status          String?
-
-  recipient AppUser @relation(fields: [recipientUserId], references: [id], onDelete: Cascade)
-
-  @@map("notification")
-  @@schema("comms")
-}
-
-model Document {
-  id          String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String   @map("incubator_id") @db.Uuid
-  fileUrl     String   @map("file_url")
-  contentType String?  @map("content_type")
-  sizeBytes   BigInt?  @map("size_bytes")
-  createdAt   DateTime @default(now()) @map("created_at")
-
-  incubator Incubator      @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  links     DocumentLink[]
-
-  @@map("document")
-  @@schema("comms")
-}
-
-model DocumentLink {
-  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  documentId  String @map("document_id") @db.Uuid
-  relatedType String @map("related_type")
-  relatedId   String @map("related_id") @db.Uuid
-
-  document Document @relation(fields: [documentId], references: [id], onDelete: Cascade)
-
-  @@map("document_link")
-  @@schema("comms")
-}
-
-model ReportTemplate {
-  id          String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String @map("incubator_id") @db.Uuid
-  name        String
-  forBody     String @map("for_body")
-  schemaJson  Json   @default("{}") @map("schema_json")
-
-  incubator Incubator        @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-  reports   ReportInstance[]
-
-  @@map("report_template")
-  @@schema("comms")
-}
-
-model ReportInstance {
-  id               String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  reportTemplateId String   @map("report_template_id") @db.Uuid
-  dataJson         Json     @default("{}") @map("data_json")
-  generatedAt      DateTime @default(now()) @map("generated_at")
-
-  template ReportTemplate @relation(fields: [reportTemplateId], references: [id], onDelete: Cascade)
-
-  @@map("report_instance")
-  @@schema("comms")
-}
-
-model Consent {
-  id               String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  startupContactId String    @map("startup_contact_id") @db.Uuid
-  purpose          String
-  granted          Boolean   @default(true)
-  grantedAt        DateTime  @default(now()) @map("granted_at")
-  expiresAt        DateTime?
-  revokedAt        DateTime?
-
-  startupContact StartupContact @relation(fields: [startupContactId], references: [id], onDelete: Cascade)
-
-  @@map("consent")
-  @@schema("security")
-}
-
-model DataRetentionPolicy {
-  id                  String @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId         String @map("incubator_id") @db.Uuid
-  entity              String
-  retentionPeriodDays Int?   @map("retention_period_days")
-  anonymizeAfterDays  Int?   @map("anonymize_after_days")
-
-  incubator Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-
-  @@map("data_retention_policy")
-  @@schema("security")
-}
-
-model ExternalIdentity {
-  id              String  @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  entityType      String  @map("entity_type")
-  entityId        String  @map("entity_id") @db.Uuid
-  provider        String
-  externalId      String? @map("external_id")
-  accessTokenMeta Json    @default("{}") @map("access_token_meta")
-
-  @@map("external_identity")
-  @@schema("security")
-}
-
-model ApiKey {
-  id          String    @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId String    @map("incubator_id") @db.Uuid
-  label       String?
-  scopes      String[]
-  hashedKey   String    @map("hashed_key")
-  createdAt   DateTime  @default(now()) @map("created_at")
-  revokedAt   DateTime? @map("revoked_at")
-
-  incubator Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-
-  @@map("api_key")
-  @@schema("security")
-}
-
-model EventLog {
-  id             String   @id @default(dbgenerated("gen_random_uuid()")) @db.Uuid
-  incubatorId    String   @map("incubator_id") @db.Uuid
-  actorType      String?  @map("actor_type")
-  actorId        String?  @map("actor_id") @db.Uuid
-  eventType      String   @map("event_type")
-  entity         String
-  entityId       String?  @map("entity_id") @db.Uuid
-  ts             DateTime @default(now())
-  propertiesJson Json     @default("{}") @map("properties_json")
-
-  incubator Incubator @relation(fields: [incubatorId], references: [id], onDelete: Cascade)
-
-  @@index([incubatorId, ts], map: "idx_event_log_inc_ts")
-  @@index([eventType], map: "idx_event_log_event_type")
-  @@map("event_log")
-  @@schema("analytics")
+  @@index([email])
 }
