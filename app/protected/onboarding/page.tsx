@@ -11,6 +11,7 @@ import {
   OnboardingFieldType,
   OnboardingForm,
   OnboardingSection,
+  OnboardingScoringRule,
 } from "@/lib/onboarding/types";
 
 const createOption = (): OnboardingFieldOption => ({
@@ -37,6 +38,37 @@ const createSection = (): OnboardingSection => ({
   fields: [createField()],
 });
 
+const defaultOperatorForType = (
+  type: OnboardingFieldType | undefined,
+): OnboardingScoringRule["operator"] => {
+  if (type === "text" || type === "textarea") {
+    return "contains";
+  }
+  if (type === "date") {
+    return "equals";
+  }
+  if (type === "select") {
+    return "equals";
+  }
+  return "equals";
+};
+
+const operatorOptionsForType = (
+  type: OnboardingFieldType | undefined,
+): OnboardingScoringRule["operator"][] => {
+  switch (type) {
+    case "select":
+      return ["equals"];
+    case "date":
+      return ["equals", "gte", "lte"];
+    case "textarea":
+    case "text":
+      return ["contains", "equals", "gte", "lte"];
+    default:
+      return ["equals", "gte", "lte", "contains"];
+  }
+};
+
 type Mode = "configure" | "apply";
 
 type UploadState = {
@@ -59,6 +91,107 @@ export default function OnboardingPage() {
   const [fieldsState, setFieldsState] = useState<Record<string, FieldState>>({});
   const [uploadState, setUploadState] = useState<Record<string, UploadState>>({});
   const router = useRouter();
+
+  const applyScoringUpdate = (
+    updater: (current: NonNullable<OnboardingForm["scoring"]>) => NonNullable<OnboardingForm["scoring"]>,
+  ) => {
+    setConfig((prev) => {
+      if (!prev) return prev;
+      const currentScoring = prev.scoring ?? { rules: [], autoRejectBelow: undefined, autoAdvanceAt: undefined, totalPoints: 0 };
+      const hydrated: NonNullable<OnboardingForm["scoring"]> = {
+        rules: currentScoring.rules.map((rule) => ({ ...rule })),
+        autoRejectBelow: currentScoring.autoRejectBelow,
+        autoAdvanceAt: currentScoring.autoAdvanceAt,
+        totalPoints: currentScoring.totalPoints,
+      };
+      const next = updater(hydrated);
+      const total = next.rules.reduce((sum, rule) => sum + (Number(rule.points) || 0), 0);
+      return {
+        ...prev,
+        scoring: {
+          ...next,
+          totalPoints: total,
+        },
+      };
+    });
+  };
+
+  const availableFields = useMemo(
+    () =>
+      config
+        ? config.sections.flatMap((section) =>
+            section.fields
+              .filter((field) => field.type !== "file")
+              .map((field) => ({
+                id: field.id,
+                label: `${section.title} • ${field.label}`,
+                type: field.type,
+              })),
+          )
+        : [],
+    [config],
+  );
+
+  const scoringSummary = useMemo(() => {
+    const scoring = config?.scoring;
+    const total = scoring?.rules?.reduce((sum, rule) => sum + (Number(rule.points) || 0), 0) ?? 0;
+    return {
+      total,
+      autoRejectBelow: scoring?.autoRejectBelow,
+      autoAdvanceAt: scoring?.autoAdvanceAt,
+    };
+  }, [config]);
+
+  const handleAddScoreRule = () => {
+    if (!config) return;
+    const firstField = availableFields[0];
+    applyScoringUpdate((current) => ({
+      ...current,
+      rules: [
+        ...current.rules,
+        {
+          id: crypto.randomUUID(),
+          fieldId: firstField?.id ?? "",
+          operator: defaultOperatorForType(firstField?.type),
+          target: "",
+          points: 10,
+          label: "New scoring rule",
+          description: "",
+        },
+      ],
+    }));
+  };
+
+  const handleUpdateScoreRule = (ruleId: string, updates: Partial<OnboardingScoringRule>) => {
+    applyScoringUpdate((current) => ({
+      ...current,
+      rules: current.rules.map((rule) =>
+        rule.id === ruleId
+          ? {
+              ...rule,
+              ...updates,
+            }
+          : rule,
+      ),
+    }));
+  };
+
+  const handleRemoveScoreRule = (ruleId: string) => {
+    applyScoringUpdate((current) => ({
+      ...current,
+      rules: current.rules.filter((rule) => rule.id !== ruleId),
+    }));
+  };
+
+  const handleUpdateScoringThreshold = (
+    key: "autoRejectBelow" | "autoAdvanceAt",
+    value: number | undefined,
+  ) => {
+    applyScoringUpdate((current) => ({
+      ...current,
+      [key]: value,
+    }));
+  };
 
   useEffect(() => {
     let active = true;
@@ -750,6 +883,234 @@ export default function OnboardingPage() {
               </div>
             </div>
           ))}
+
+          <div className="space-y-5 rounded-xl border border-slate-800/80 bg-slate-950/60 p-6">
+            <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+              <div>
+                <h2 className="text-xl font-semibold text-slate-100">Automated screening & scoring</h2>
+                <p className="text-sm text-slate-400">
+                  Define rules to automatically award points and triage incoming applications.
+                </p>
+              </div>
+              <button
+                type="button"
+                onClick={handleAddScoreRule}
+                disabled={availableFields.length === 0}
+                className="rounded-full border border-purple-500/70 px-3 py-2 text-xs font-semibold uppercase tracking-wide text-purple-200 transition hover:bg-purple-500/10 disabled:cursor-not-allowed disabled:opacity-60"
+              >
+                Add scoring rule
+              </button>
+            </div>
+
+            {availableFields.length === 0 && (
+              <p className="rounded-lg border border-dashed border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-400">
+                Add at least one text, select, or numeric field to start configuring automated screening.
+              </p>
+            )}
+
+            {(config.scoring?.rules ?? []).length > 0 ? (
+              <div className="space-y-4">
+                {(config.scoring?.rules ?? []).map((rule) => {
+                  const fieldMeta = availableFields.find((item) => item.id === rule.fieldId);
+                  const baseOperators = operatorOptionsForType(fieldMeta?.type);
+                  const operatorOptions = Array.from(
+                    new Set([
+                      ...baseOperators,
+                      rule.operator ?? "",
+                    ].filter((option) => option && option.length > 0)),
+                  );
+                  const operatorValue =
+                    (rule.operator && operatorOptions.includes(rule.operator)
+                      ? rule.operator
+                      : operatorOptions[0]) ?? "equals";
+
+                  return (
+                    <div
+                      key={rule.id}
+                      className="space-y-4 rounded-lg border border-slate-800 bg-slate-900/40 p-4"
+                    >
+                      <div className="grid gap-3 md:grid-cols-2">
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                          Rule name
+                          <input
+                            type="text"
+                            value={rule.label}
+                            onChange={(event) =>
+                              handleUpdateScoreRule(rule.id, { label: event.target.value })
+                            }
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                          />
+                        </label>
+
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                          Points awarded
+                          <input
+                            type="number"
+                            min={0}
+                            step={1}
+                            value={rule.points ?? 0}
+                            onChange={(event) => {
+                              const nextValue = Math.max(0, Number(event.target.value) || 0);
+                              handleUpdateScoreRule(rule.id, { points: nextValue });
+                            }}
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+
+                      <div className="grid gap-3 md:grid-cols-3">
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                          Field to evaluate
+                          <select
+                            value={rule.fieldId}
+                            onChange={(event) => {
+                              const selected = availableFields.find((item) => item.id === event.target.value);
+                              handleUpdateScoreRule(rule.id, {
+                                fieldId: selected?.id ?? "",
+                                operator: defaultOperatorForType(selected?.type),
+                                target: "",
+                              });
+                            }}
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                          >
+                            <option value="">Select a field</option>
+                            {availableFields.map((field) => (
+                              <option key={field.id} value={field.id}>
+                                {field.label}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                          Operator
+                          <select
+                            value={operatorValue}
+                            onChange={(event) =>
+                              handleUpdateScoreRule(rule.id, {
+                                operator: event.target.value as OnboardingScoringRule["operator"],
+                              })
+                            }
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                          >
+                            {operatorOptions.map((option) => (
+                              <option key={option} value={option}>
+                                {option}
+                              </option>
+                            ))}
+                          </select>
+                        </label>
+
+                        <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                          Target value
+                          <input
+                            type="text"
+                            value={rule.target}
+                            onChange={(event) =>
+                              handleUpdateScoreRule(rule.id, { target: event.target.value })
+                            }
+                            placeholder={
+                              operatorValue === "contains"
+                                ? "Keyword e.g. revenue"
+                                : operatorValue === "gte" || operatorValue === "lte"
+                                  ? "Numeric threshold"
+                                  : "Exact match value"
+                            }
+                            className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                          />
+                        </label>
+                      </div>
+
+                      <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                        Description (optional)
+                        <textarea
+                          value={rule.description ?? ""}
+                          onChange={(event) =>
+                            handleUpdateScoreRule(rule.id, { description: event.target.value })
+                          }
+                          className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                          placeholder="Explain why this signal matters (shown in reviewer dashboards)."
+                          rows={2}
+                        />
+                      </label>
+
+                      <button
+                        type="button"
+                        onClick={() => handleRemoveScoreRule(rule.id)}
+                        className="text-xs font-medium text-red-300 hover:text-red-200"
+                      >
+                        Remove rule
+                      </button>
+                    </div>
+                  );
+                })}
+              </div>
+            ) : (
+              availableFields.length > 0 && (
+                <p className="rounded-lg border border-dashed border-slate-800 bg-slate-900/40 p-4 text-sm text-slate-400">
+                  No automated screening rules defined yet. Add a rule to start scoring incoming submissions.
+                </p>
+              )
+            )}
+
+            <div className="grid gap-4 md:grid-cols-2">
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                Auto-advance threshold
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={
+                    config.scoring?.autoAdvanceAt !== undefined
+                      ? config.scoring.autoAdvanceAt
+                      : ""
+                  }
+                  onChange={(event) => {
+                    const nextValue = event.target.value === "" ? undefined : Math.max(0, Number(event.target.value) || 0);
+                    handleUpdateScoringThreshold("autoAdvanceAt", nextValue);
+                  }}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                  placeholder="Auto mark as ready when score ≥ value"
+                />
+              </label>
+
+              <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-purple-200/80">
+                Auto-reject threshold
+                <input
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={
+                    config.scoring?.autoRejectBelow !== undefined
+                      ? config.scoring.autoRejectBelow
+                      : ""
+                  }
+                  onChange={(event) => {
+                    const nextValue = event.target.value === "" ? undefined : Math.max(0, Number(event.target.value) || 0);
+                    handleUpdateScoringThreshold("autoRejectBelow", nextValue);
+                  }}
+                  className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-purple-500 focus:outline-none"
+                  placeholder="Flag submissions below value"
+                />
+              </label>
+            </div>
+
+            <div className="flex flex-wrap items-center gap-3 text-xs text-slate-400">
+              <span className="rounded-full border border-slate-800 px-3 py-1">
+                Total available points: {scoringSummary.total}
+              </span>
+              {scoringSummary.autoAdvanceAt !== undefined && (
+                <span className="rounded-full border border-emerald-500/60 px-3 py-1 text-emerald-200">
+                  Auto-advance at ≥ {scoringSummary.autoAdvanceAt}
+                </span>
+              )}
+              {scoringSummary.autoRejectBelow !== undefined && (
+                <span className="rounded-full border border-red-500/60 px-3 py-1 text-red-200">
+                  Auto-reject below {scoringSummary.autoRejectBelow}
+                </span>
+              )}
+            </div>
+          </div>
 
           <div className="flex items-center justify-between">
             <button

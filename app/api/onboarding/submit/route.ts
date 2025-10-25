@@ -1,5 +1,10 @@
 import { NextResponse } from "next/server";
-import { saveOnboardingSubmission } from "@/lib/onboarding/service";
+import {
+  enrichAttachment,
+  evaluateSubmissionScore,
+  getOnboardingConfig,
+  saveOnboardingSubmission,
+} from "@/lib/onboarding/service";
 import { OnboardingFieldResponse } from "@/lib/onboarding/types";
 
 export const dynamic = "force-dynamic";
@@ -30,10 +35,19 @@ export async function POST(request: Request) {
   const userId = payload.applicantId?.trim() || "public";
 
   try {
+    const enrichedResponses = payload.responses.map((response) => ({
+      ...response,
+      attachments: response.attachments?.map(enrichAttachment),
+    }));
+
+    const form = await getOnboardingConfig();
+    const score = form.id === payload.formId ? evaluateSubmissionScore(form, enrichedResponses) : undefined;
+
     const record = await saveOnboardingSubmission({
       userId,
       formId: payload.formId,
-      responses: payload.responses,
+      responses: enrichedResponses,
+      score,
     });
 
     return NextResponse.json({ ok: true, submission: record });

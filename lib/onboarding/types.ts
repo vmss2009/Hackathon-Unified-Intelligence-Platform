@@ -31,6 +31,7 @@ export type OnboardingForm = {
   summary: string;
   sections: OnboardingSection[];
   updatedAt: string;
+  scoring?: OnboardingScoringConfig;
 };
 
 export type OnboardingAttachment = {
@@ -53,4 +54,40 @@ export type OnboardingSubmission = {
   formId: string;
   submittedAt: string;
   responses: OnboardingFieldResponse[];
+  score?: OnboardingSubmissionScore;
+};
+
+export type OnboardingScoreOperator = "equals" | "contains" | "gte" | "lte";
+
+export type OnboardingScoringRule = {
+  id: string;
+  fieldId: string;
+  operator: OnboardingScoreOperator;
+  target: string;
+  points: number;
+  label: string;
+  description?: string;
+};
+
+export type OnboardingScoringConfig = {
+  rules: OnboardingScoringRule[];
+  autoRejectBelow?: number;
+  autoAdvanceAt?: number;
+  totalPoints?: number;
+};
+
+export type OnboardingSubmissionScore = {
+  total: number;
+  awarded: number;
+  percentage: number;
+  status: "advance" | "review" | "reject";
+  thresholdAdvance?: number;
+  thresholdReject?: number;
+  breakdown: {
+    ruleId: string;
+    label: string;
+    points: number;
+    matched: boolean;
+    reason?: string;
+  }[];
 };

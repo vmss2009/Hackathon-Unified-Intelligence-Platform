@@ -1,6 +1,11 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/user";
-import { enrichAttachment, saveOnboardingSubmission } from "@/lib/onboarding/service";
+import {
+  enrichAttachment,
+  evaluateSubmissionScore,
+  getOnboardingConfig,
+  saveOnboardingSubmission,
+} from "@/lib/onboarding/service";
 import { OnboardingFieldResponse } from "@/lib/onboarding/types";
 
 export const dynamic = "force-dynamic";
@@ -39,10 +44,14 @@ export async function POST(request: Request) {
       attachments: response.attachments?.map(enrichAttachment),
     }));
 
+    const form = await getOnboardingConfig();
+    const score = form.id === payload.formId ? evaluateSubmissionScore(form, enrichedResponses) : undefined;
+
     const record = await saveOnboardingSubmission({
       userId: session.user.id,
       formId: payload.formId,
       responses: enrichedResponses,
+      score,
     });
 
     return NextResponse.json({ ok: true, submission: record });
