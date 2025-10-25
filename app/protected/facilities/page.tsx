@@ -27,6 +27,33 @@ type FacilityBooking = {
   status: string;
 };
 
+type FacilityUtilisationSummary = {
+  resourceId: string;
+  resourceName: string;
+  resourceType: string;
+  totalBookings: number;
+  totalBookedHours: number;
+  totalAvailableHours: number;
+  averageBookingHours: number;
+  idleHours: number;
+  utilisationRate: number;
+  peakUsageHour?: {
+    hour: string;
+    bookings: number;
+  };
+};
+
+type FacilityAnalyticsOverview = {
+  range: {
+    start: string;
+    end: string;
+  };
+  summaries: FacilityUtilisationSummary[];
+  peakHours: Array<{ hour: string; bookings: number }>;
+  busiestResources: FacilityUtilisationSummary[];
+  idleResources: FacilityUtilisationSummary[];
+};
+
 const RESOURCE_LABELS: Record<string, string> = {
   meeting_room: "Meeting Room",
   lab: "R&D Lab",
@@ -39,6 +66,16 @@ const formatDateTime = (iso: string): string => {
   const date = new Date(iso);
   if (Number.isNaN(date.getTime())) return "—";
   return date.toLocaleString();
+};
+
+const formatPercent = (value: number): string => {
+  if (!Number.isFinite(value)) return "—";
+  return `${(value * 100).toFixed(1)}%`;
+};
+
+const formatHours = (value: number): string => {
+  if (!Number.isFinite(value)) return "—";
+  return `${value.toFixed(1)}h`;
 };
 
 const useFacilityData = () => {
@@ -134,6 +171,102 @@ const useResourceBookings = (resourceId: string | undefined, refreshToken: numbe
   return { bookings, loading, error };
 };
 
+const usePendingApprovals = (refreshToken: number) => {
+  const [pending, setPending] = useState<FacilityBooking[]>([]);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    fetch("/api/protected/facilities/bookings?status=pending&limit=50")
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error("Unable to load pending approvals");
+        }
+        return (await res.json()) as { ok: boolean; bookings?: FacilityBooking[]; error?: string };
+      })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        if (!payload.ok || !payload.bookings) {
+          setError(payload.error ?? "Unable to load pending approvals");
+          setPending([]);
+          return;
+        }
+        setPending(payload.bookings);
+      })
+      .catch((fetchError) => {
+        if (!cancelled) {
+          setError(fetchError instanceof Error ? fetchError.message : "Unable to load pending approvals");
+          setPending([]);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshToken]);
+
+  return { pending, loading, error };
+};
+
+const useFacilityAnalytics = (refreshToken: number) => {
+  const [analytics, setAnalytics] = useState<FacilityAnalyticsOverview | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<string | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    setLoading(true);
+    setError(null);
+
+    fetch("/api/protected/facilities/analytics")
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error("Unable to load utilisation analytics");
+        }
+        return (await res.json()) as { ok: boolean; analytics?: FacilityAnalyticsOverview; error?: string };
+      })
+      .then((payload) => {
+        if (cancelled) {
+          return;
+        }
+        if (!payload.ok || !payload.analytics) {
+          setError(payload.error ?? "Unable to load utilisation analytics");
+          setAnalytics(null);
+          return;
+        }
+        setAnalytics(payload.analytics);
+      })
+      .catch((fetchError) => {
+        if (!cancelled) {
+          setError(fetchError instanceof Error ? fetchError.message : "Unable to load utilisation analytics");
+          setAnalytics(null);
+        }
+      })
+      .finally(() => {
+        if (!cancelled) {
+          setLoading(false);
+        }
+      });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [refreshToken]);
+
+  return { analytics, loading, error };
+};
+
 type BookingFormState = {
   title: string;
   description: string;
@@ -158,6 +291,12 @@ export default function FacilitiesPage() {
   const [submitError, setSubmitError] = useState<string | null>(null);
   const [successMessage, setSuccessMessage] = useState<string | null>(null);
   const [refreshToken, setRefreshToken] = useState(0);
+  const [analyticsTrigger, setAnalyticsTrigger] = useState(0);
+  const { pending, loading: loadingPending, error: pendingError } = usePendingApprovals(refreshToken);
+  const { analytics, loading: loadingAnalytics, error: analyticsError } = useFacilityAnalytics(analyticsTrigger);
+  const [approvalMessage, setApprovalMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [reviewingKey, setReviewingKey] = useState<string | null>(null);
+  const [cancellingBookingId, setCancellingBookingId] = useState<string | null>(null);
 
   useEffect(() => {
     if (!selectedResourceId && resources.length > 0) {
@@ -172,9 +311,40 @@ export default function FacilitiesPage() {
     [resources, selectedResourceId],
   );
 
+  const resourceLookup = useMemo(() => {
+    const map = new Map<string, FacilityResource>();
+    resources.forEach((resource) => map.set(resource.id, resource));
+    return map;
+  }, [resources]);
+
+  const analyticsTotals = useMemo(() => {
+    if (!analytics) {
+      return null;
+    }
+
+    const totalResources = analytics.summaries.length;
+    const totalBookings = analytics.summaries.reduce((acc, summary) => acc + summary.totalBookings, 0);
+    const totalBookedHours = analytics.summaries.reduce((acc, summary) => acc + summary.totalBookedHours, 0);
+    const totalAvailableHours = analytics.summaries.reduce((acc, summary) => acc + summary.totalAvailableHours, 0);
+    const averageUtilisation = totalAvailableHours > 0 ? totalBookedHours / totalAvailableHours : 0;
+    const peakHour = analytics.peakHours.reduce<{ hour: string; bookings: number } | null>((best, entry) => {
+      if (!best || entry.bookings > best.bookings) {
+        return entry;
+      }
+      return best;
+    }, null);
+
+    return { totalResources, totalBookings, averageUtilisation, peakHour };
+  }, [analytics]);
+
+  const bumpDataRefresh = () => {
+    setRefreshToken((value) => value + 1);
+    setAnalyticsTrigger((value) => value + 1);
+  };
+
   const typeLabel = selectedResource ? RESOURCE_LABELS[selectedResource.type] ?? "Resource" : "Resource";
 
-  const handleSubmit = (event: React.FormEvent<HTMLFormElement>) => {
+  const handleSubmit = async (event: React.FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     if (!selectedResourceId) {
       setSubmitError("Choose a resource before booking");
@@ -184,51 +354,119 @@ export default function FacilitiesPage() {
     setSubmitting(true);
     setSubmitError(null);
     setSuccessMessage(null);
+    setApprovalMessage(null);
 
     const participants = formState.participants
       ? formState.participants.split(",").map((item) => item.trim()).filter((item) => item.length > 0)
       : undefined;
 
-    fetch("/api/protected/facilities/bookings", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        resourceId: selectedResourceId,
-        title: formState.title,
-        description: formState.description || undefined,
-        startTime: formState.startTime,
-        endTime: formState.endTime,
-        participants,
-      }),
-    })
-      .then(async (res) => {
-        if (!res.ok) {
-          const payload = (await res.json().catch(() => null)) as { error?: string } | null;
-          throw new Error(payload?.error ?? "Unable to create booking");
-        }
-        return res.json();
-      })
-      .then(() => {
-        setFormState({ ...initialFormState });
-        setSuccessMessage("Booking confirmed");
-        setRefreshToken((value) => value + 1);
-      })
-      .catch((error: unknown) => {
-        setSubmitError(error instanceof Error ? error.message : "Unable to create booking");
-      })
-      .finally(() => {
-        setSubmitting(false);
+    try {
+      const response = await fetch("/api/protected/facilities/bookings", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          resourceId: selectedResourceId,
+          title: formState.title,
+          description: formState.description || undefined,
+          startTime: formState.startTime,
+          endTime: formState.endTime,
+          participants,
+        }),
       });
+
+      if (!response.ok) {
+        const payload = (await response.json().catch(() => null)) as { error?: string } | null;
+        throw new Error(payload?.error ?? "Unable to create booking");
+      }
+
+      const payload = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        booking?: FacilityBooking;
+        error?: string;
+      } | null;
+
+      if (!payload?.ok || !payload.booking) {
+        throw new Error(payload?.error ?? "Unable to create booking");
+      }
+
+      setFormState({ ...initialFormState });
+      const pendingStatus = payload.booking.status === "pending";
+      setSuccessMessage(pendingStatus ? "Booking submitted for approval" : "Booking confirmed");
+      bumpDataRefresh();
+    } catch (error) {
+      setSubmitError(error instanceof Error ? error.message : "Unable to create booking");
+    } finally {
+      setSubmitting(false);
+    }
   };
 
-  const cancelBooking = (bookingId: string) => {
-    fetch(`/api/protected/facilities/bookings/${bookingId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ reason: "Cancelled via dashboard" }),
-    }).finally(() => {
-      setRefreshToken((value) => value + 1);
-    });
+  const cancelBooking = async (bookingId: string) => {
+    setCancellingBookingId(bookingId);
+    setApprovalMessage(null);
+    try {
+      const response = await fetch(`/api/protected/facilities/bookings/${bookingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ reason: "Cancelled via dashboard" }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        booking?: FacilityBooking;
+        error?: string;
+      } | null;
+
+      if (!response.ok || !payload?.ok || !payload.booking) {
+        throw new Error(payload?.error ?? "Unable to cancel booking");
+      }
+
+      setApprovalMessage({ type: "success", text: "Booking cancelled" });
+      bumpDataRefresh();
+    } catch (error) {
+      setApprovalMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Unable to cancel booking",
+      });
+    } finally {
+      setCancellingBookingId(null);
+    }
+  };
+
+  const reviewPendingBooking = async (bookingId: string, decision: "approve" | "reject") => {
+    const actionKey = `${bookingId}:${decision}`;
+    setReviewingKey(actionKey);
+    setApprovalMessage(null);
+
+    try {
+      const response = await fetch(`/api/protected/facilities/bookings/${bookingId}`, {
+        method: "PATCH",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ action: decision }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        booking?: FacilityBooking;
+        error?: string;
+      } | null;
+
+      if (!response.ok || !payload?.ok || !payload.booking) {
+        throw new Error(payload?.error ?? "Unable to update booking approval");
+      }
+
+      setApprovalMessage({
+        type: "success",
+        text: decision === "approve" ? "Booking approved" : "Booking rejected",
+      });
+      bumpDataRefresh();
+    } catch (error) {
+      setApprovalMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Unable to update booking approval",
+      });
+    } finally {
+      setReviewingKey(null);
+    }
   };
 
   return (
@@ -293,6 +531,184 @@ export default function FacilitiesPage() {
         </aside>
 
         <main className="flex flex-col gap-6">
+          {approvalMessage && (
+            <div
+              className={`rounded-2xl border p-4 text-sm ${
+                approvalMessage.type === "success"
+                  ? "border-green-200 bg-green-50 text-green-700"
+                  : "border-red-200 bg-red-50 text-red-700"
+              }`}
+            >
+              {approvalMessage.text}
+            </div>
+          )}
+
+          <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+            <header className="mb-4 flex flex-col gap-1">
+              <h2 className="text-lg font-semibold text-gray-900">Pending approvals</h2>
+              <p className="text-sm text-gray-500">Review booking requests that require an approval decision.</p>
+            </header>
+
+            {pendingError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{pendingError}</div>
+            )}
+
+            {loadingPending && (
+              <p className="text-sm text-gray-400">Loading pending approvals...</p>
+            )}
+
+            {!loadingPending && pending.length === 0 && !pendingError && (
+              <p className="text-sm text-gray-400">No pending approvals right now. You&apos;re all caught up.</p>
+            )}
+
+            {!loadingPending && pending.length > 0 && (
+              <ul className="flex flex-col gap-3">
+                {pending.map((booking) => {
+                  const resource = resourceLookup.get(booking.resourceId);
+                  const approveKey = `${booking.id}:approve`;
+                  const rejectKey = `${booking.id}:reject`;
+                  const isApproving = reviewingKey === approveKey;
+                  const isRejecting = reviewingKey === rejectKey;
+                  return (
+                    <li key={booking.id} className="flex flex-col gap-3 rounded-xl border border-gray-200 p-4">
+                      <div className="flex flex-col gap-1">
+                        <div className="flex flex-wrap items-center justify-between gap-2">
+                          <div>
+                            <p className="text-sm font-semibold text-gray-900">{booking.title}</p>
+                            <p className="text-xs text-gray-500">{formatDateTime(booking.startTime)} → {formatDateTime(booking.endTime)}</p>
+                          </div>
+                          <span className="rounded-full bg-yellow-50 px-3 py-1 text-xs font-semibold uppercase tracking-wide text-yellow-700">
+                            Pending
+                          </span>
+                        </div>
+                        <p className="text-xs text-gray-500">
+                          {resource ? `${resource.name} • ${RESOURCE_LABELS[resource.type] ?? "Resource"}` : "Unknown resource"}
+                        </p>
+                        {booking.description && <p className="text-sm text-gray-500">{booking.description}</p>}
+                      </div>
+
+                      <div className="flex flex-wrap gap-2">
+                        <button
+                          type="button"
+                          onClick={() => reviewPendingBooking(booking.id, "approve")}
+                          disabled={isApproving || isRejecting}
+                          className="inline-flex items-center justify-center rounded-lg bg-green-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-green-500 disabled:cursor-not-allowed disabled:bg-green-200"
+                        >
+                          {isApproving ? "Approving..." : "Approve"}
+                        </button>
+                        <button
+                          type="button"
+                          onClick={() => reviewPendingBooking(booking.id, "reject")}
+                          disabled={isApproving || isRejecting}
+                          className="inline-flex items-center justify-center rounded-lg border border-red-300 px-3 py-2 text-xs font-semibold text-red-600 transition hover:border-red-400 hover:bg-red-50 disabled:cursor-not-allowed disabled:border-red-200 disabled:text-red-300"
+                        >
+                          {isRejecting ? "Rejecting..." : "Reject"}
+                        </button>
+                      </div>
+                    </li>
+                  );
+                })}
+              </ul>
+            )}
+          </section>
+
+          <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
+            <header className="mb-4 flex flex-col gap-1">
+              <h2 className="text-lg font-semibold text-gray-900">Utilisation analytics</h2>
+              <p className="text-sm text-gray-500">Track how facilities are being used across the hub.</p>
+            </header>
+
+            {analyticsError && (
+              <div className="rounded-xl border border-red-200 bg-red-50 p-3 text-sm text-red-700">{analyticsError}</div>
+            )}
+
+            {loadingAnalytics && (
+              <p className="text-sm text-gray-400">Loading utilisation insights...</p>
+            )}
+
+            {!loadingAnalytics && analytics && (
+              <div className="flex flex-col gap-4">
+                <p className="text-xs text-gray-500">
+                  Range: {formatDateTime(analytics.range.start)} → {formatDateTime(analytics.range.end)}
+                </p>
+
+                {analyticsTotals && (
+                  <div className="grid gap-4 sm:grid-cols-2 xl:grid-cols-4">
+                    <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Tracked resources</p>
+                      <p className="mt-2 text-2xl font-semibold text-gray-900">{analyticsTotals.totalResources}</p>
+                    </div>
+                    <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Total bookings</p>
+                      <p className="mt-2 text-2xl font-semibold text-gray-900">{analyticsTotals.totalBookings}</p>
+                    </div>
+                    <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Average utilisation</p>
+                      <p className="mt-2 text-2xl font-semibold text-gray-900">{formatPercent(analyticsTotals.averageUtilisation)}</p>
+                    </div>
+                    <div className="rounded-xl border border-gray-100 bg-gray-50 p-4">
+                      <p className="text-xs uppercase tracking-wide text-gray-500">Peak hour</p>
+                      <p className="mt-2 text-sm font-semibold text-gray-900">
+                        {analyticsTotals.peakHour
+                          ? `${analyticsTotals.peakHour.hour} (${analyticsTotals.peakHour.bookings} bookings)`
+                          : "—"}
+                      </p>
+                    </div>
+                  </div>
+                )}
+
+                <div className="grid gap-4 lg:grid-cols-2">
+                  <div className="flex flex-col gap-3 rounded-xl border border-gray-100 p-4">
+                    <h3 className="text-sm font-semibold text-gray-900">Busiest resources</h3>
+                    {analytics.busiestResources.length === 0 && (
+                      <p className="text-sm text-gray-400">No utilisation data yet.</p>
+                    )}
+                    {analytics.busiestResources.length > 0 && (
+                      <ul className="flex flex-col gap-2">
+                        {analytics.busiestResources.slice(0, 3).map((summary) => (
+                          <li key={summary.resourceId} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm text-gray-700 shadow-sm">
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-gray-900">{summary.resourceName}</span>
+                              <span className="text-xs text-gray-500">
+                                {RESOURCE_LABELS[summary.resourceType] ?? summary.resourceType} • {formatHours(summary.totalBookedHours)} booked
+                              </span>
+                            </div>
+                            <span className="text-xs font-semibold text-green-600">{formatPercent(summary.utilisationRate)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                  <div className="flex flex-col gap-3 rounded-xl border border-gray-100 p-4">
+                    <h3 className="text-sm font-semibold text-gray-900">Under-utilised</h3>
+                    {analytics.idleResources.length === 0 && (
+                      <p className="text-sm text-gray-400">All resources are in use.</p>
+                    )}
+                    {analytics.idleResources.length > 0 && (
+                      <ul className="flex flex-col gap-2">
+                        {analytics.idleResources.slice(0, 3).map((summary) => (
+                          <li key={summary.resourceId} className="flex items-center justify-between rounded-lg bg-white px-3 py-2 text-sm text-gray-700 shadow-sm">
+                            <div className="flex flex-col">
+                              <span className="font-semibold text-gray-900">{summary.resourceName}</span>
+                              <span className="text-xs text-gray-500">
+                                {RESOURCE_LABELS[summary.resourceType] ?? summary.resourceType} • {formatHours(summary.idleHours)} idle
+                              </span>
+                            </div>
+                            <span className="text-xs font-semibold text-gray-500">{formatPercent(summary.utilisationRate)}</span>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+
+            {!loadingAnalytics && !analytics && !analyticsError && (
+              <p className="text-sm text-gray-400">No utilisation data captured yet.</p>
+            )}
+          </section>
+
           {selectedResource ? (
             <div className="flex flex-col gap-6">
               <section className="rounded-2xl border border-gray-200 bg-white p-6 shadow-sm">
@@ -425,6 +841,8 @@ export default function FacilitiesPage() {
                                 ? "bg-red-50 text-red-600"
                                 : booking.status === "completed"
                                 ? "bg-green-50 text-green-600"
+                                : booking.status === "pending"
+                                ? "bg-yellow-50 text-yellow-700"
                                 : "bg-blue-50 text-blue-600"
                             }`}
                           >
@@ -438,9 +856,10 @@ export default function FacilitiesPage() {
                           <button
                             type="button"
                             onClick={() => cancelBooking(booking.id)}
-                            className="self-start rounded-lg border border-gray-300 px-3 py-1 text-xs font-medium text-gray-600 transition hover:border-red-300 hover:text-red-600"
+                            disabled={cancellingBookingId === booking.id}
+                            className="self-start rounded-lg border border-gray-300 px-3 py-1 text-xs font-medium text-gray-600 transition hover:border-red-300 hover:text-red-600 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-400"
                           >
-                            Cancel booking
+                            {cancellingBookingId === booking.id ? "Cancelling..." : "Cancel booking"}
                           </button>
                         )}
                       </li>

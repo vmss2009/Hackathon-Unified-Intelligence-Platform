@@ -102,3 +102,46 @@ export type FacilityBookingListFilters = {
   limit?: number;
 };
 
+export type FacilityBookingReviewRequest = {
+  bookingId: string;
+  decision: "approve" | "reject";
+  note?: string;
+  actor: {
+    id: string;
+    name?: string;
+    email?: string;
+  };
+};
+
+export type FacilityUtilisationFilters = {
+  start?: string;
+  end?: string;
+};
+
+export type FacilityUtilisationSummary = {
+  resourceId: string;
+  resourceName: string;
+  resourceType: FacilityResourceType;
+  totalBookings: number;
+  totalBookedHours: number;
+  totalAvailableHours: number;
+  averageBookingHours: number;
+  idleHours: number;
+  utilisationRate: number;
+  peakUsageHour?: {
+    hour: string;
+    bookings: number;
+  };
+};
+
+export type FacilityAnalyticsOverview = {
+  range: {
+    start: string;
+    end: string;
+  };
+  summaries: FacilityUtilisationSummary[];
+  peakHours: Array<{ hour: string; bookings: number }>;
+  busiestResources: FacilityUtilisationSummary[];
+  idleResources: FacilityUtilisationSummary[];
+};
+
