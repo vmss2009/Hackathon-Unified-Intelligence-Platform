@@ -30,7 +30,7 @@ export const { handlers, signIn, signOut, auth } = NextAuth({
       if (!email) return "/sign-in?error=not_allowed";
 
       const dbUser = await getUserByEmail(email);
-      if (!dbUser) {
+      if (!dbUser || !dbUser.isActive) {
         return "/sign-in?error=not_allowed";
       }
 

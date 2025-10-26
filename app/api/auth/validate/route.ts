@@ -12,7 +12,7 @@ export async function GET() {
     }
 
     const user = await getUserByEmail(email);
-    if (!user) {
+    if (!user || !user.isActive) {
       return NextResponse.json({ error: "not_allowed" }, { status: 401 });
     }
 

@@ -1,5 +1,6 @@
 import { NextResponse } from "next/server";
 import { auth } from "@/lib/auth/user";
+import { loadUserProfile, canReviewOnboarding, canViewOwnOnboarding, getAccessibleStartupIds } from "@/lib/auth/access";
 import { getOnboardingConfig, listOnboardingSubmissions } from "@/lib/onboarding/service";
 import { OnboardingSubmissionFilters } from "@/lib/onboarding/types";
 
@@ -22,6 +23,18 @@ export async function GET(request: Request) {
 
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  let profile;
+  try {
+    profile = await loadUserProfile(session.user.id);
+  } catch (error) {
+    console.error("GET /protected/onboarding/submissions profile load failed", error);
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!canViewOwnOnboarding(profile)) {
+    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
   const url = new URL(request.url);
@@ -56,11 +69,25 @@ export async function GET(request: Request) {
     const form = await getOnboardingConfig();
     const result = await listOnboardingSubmissions(form, filters);
 
+    let entries = result.entries;
+
+    if (!canReviewOnboarding(profile)) {
+      const ownedSubmissionIds = await getAccessibleStartupIds(profile);
+      const accessibleIds = new Set<string>([...profile.startupIds, ...ownedSubmissionIds]);
+
+      entries = entries.filter((submission) => {
+        if (submission.userId === profile.id) {
+          return true;
+        }
+        return accessibleIds.has(submission.id);
+      });
+    }
+
     return NextResponse.json({
       ok: true,
-      submissions: result.entries,
+      submissions: entries,
       meta: {
-        total: result.total,
+        total: entries.length,
         stageFieldId: result.stageFieldId,
         stageOptions: result.stageOptions,
         scoreRange: result.scoreRange,

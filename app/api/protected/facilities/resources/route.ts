@@ -1,6 +1,7 @@
 import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
+import { canManageFacilities, loadUserProfile } from "@/lib/auth/access";
 import { listFacilityResources, upsertFacilityResource } from "@/lib/facilities/service";
 import type { FacilityResourceType } from "@/lib/facilities/types";
 
@@ -35,6 +36,11 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
+  const profile = await loadUserProfile(session.user.id);
+  if (!canManageFacilities(profile)) {
+    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
+  }
+
   let payload: unknown;
   try {
     payload = await request.json();
@@ -47,7 +53,7 @@ export async function POST(request: NextRequest) {
   try {
     const resource = await upsertFacilityResource({
       id: typeof body.id === "string" && body.id.trim().length ? body.id : undefined,
-  type: parseResourceType(body.type),
+      type: parseResourceType(body.type),
       name: (body.name as string) ?? "",
       location: typeof body.location === "string" ? body.location : undefined,
       capacity: typeof body.capacity === "number" ? body.capacity : undefined,

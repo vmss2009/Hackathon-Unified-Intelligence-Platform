@@ -7,6 +7,13 @@ import {
   OnboardingSubmissionSummaryStatus,
 } from "@/lib/onboarding/types";
 
+type UserProfile = {
+  id: string;
+  email: string;
+  name: string | null;
+  permissions?: string[];
+};
+
 type StageOption = {
   value: string;
   label: string;
@@ -339,6 +346,7 @@ function ManualScoreEditor({ submission, onUpdated }: ManualScoreEditorProps) {
 }
 
 export default function SubmissionReviewPage() {
+  const [profile, setProfile] = useState<UserProfile | null>(null);
   const [filters, setFilters] = useState<FiltersState>(INITIAL_FILTERS);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
@@ -347,6 +355,36 @@ export default function SubmissionReviewPage() {
   const [statusOptions, setStatusOptions] = useState<StatusOption[]>(["advance", "review", "reject"]);
   const [scoreBounds, setScoreBounds] = useState<{ min: number; max: number }>({ min: 0, max: 0 });
   const [expandedId, setExpandedId] = useState<string | null>(null);
+
+  useEffect(() => {
+    let active = true;
+
+    fetch("/api/protected/auth", { cache: "no-store" })
+      .then(async (res) => {
+        if (!res.ok) {
+          throw new Error("Profile request failed");
+        }
+        return (await res.json()) as { ok: boolean; profile?: UserProfile };
+      })
+      .then((payload) => {
+        if (!active) {
+          return;
+        }
+        if (payload.ok && payload.profile) {
+          setProfile(payload.profile);
+        }
+      })
+      .catch(() => {
+        if (!active) {
+          return;
+        }
+        setProfile(null);
+      });
+
+    return () => {
+      active = false;
+    };
+  }, []);
 
   useEffect(() => {
     const controller = new AbortController();
@@ -433,6 +471,16 @@ export default function SubmissionReviewPage() {
     return map;
   }, [stageOptions]);
 
+  const permissions = useMemo(() => new Set(profile?.permissions ?? []), [profile]);
+  const canReview = permissions.has("onboarding:manage") || permissions.has("onboarding:review");
+  const canConfigure = permissions.has("onboarding:manage") || permissions.has("forms:configure");
+  const headerDescription = canReview
+    ? "Evaluate incoming founder applications with automated scoring, filters, and rich context."
+    : "Review the status, scoring, and feedback for your onboarding application.";
+  const summaryLabel = canReview
+    ? `Showing ${summary.total} submission${summary.total === 1 ? "" : "s"} with current filters.`
+    : "Showing your onboarding submission.";
+
   const toggleExpanded = (id: string) => {
     setExpandedId((current) => (current === id ? null : id));
   };
@@ -454,20 +502,18 @@ export default function SubmissionReviewPage() {
               Founder submissions
             </p>
             <h1 className="text-3xl font-bold text-slate-100">Application review</h1>
-            <p className="text-sm text-slate-300/90">
-              Evaluate incoming founder applications with automated scoring, filters, and rich context.
-            </p>
-            <p className="text-xs text-slate-500">
-              Showing {summary.total} submission{summary.total === 1 ? "" : "s"} with current filters.
-            </p>
+            <p className="text-sm text-slate-300/90">{headerDescription}</p>
+            <p className="text-xs text-slate-500">{summaryLabel}</p>
           </div>
           <div className="flex flex-wrap items-center gap-3">
-            <Link
-              href="/protected/onboarding"
-              className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70"
-            >
-              Builder workspace
-            </Link>
+            {canConfigure && (
+              <Link
+                href="/protected/onboarding"
+                className="rounded-full border border-slate-700 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-slate-300 transition hover:bg-slate-900/70"
+              >
+                Builder workspace
+              </Link>
+            )}
             <Link
               href="/onboarding"
               className="rounded-full border border-blue-500/70 px-4 py-2 text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:bg-blue-500/10"
@@ -493,85 +539,87 @@ export default function SubmissionReviewPage() {
         </div>
       </header>
 
-      <section className="space-y-4 rounded-2xl border border-slate-800/70 bg-slate-950/60 p-6">
-        <div className="flex items-center justify-between">
-          <h2 className="text-lg font-semibold text-slate-100">Filters</h2>
-          <button
-            type="button"
-            onClick={resetFilters}
-            className="text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:text-blue-100"
-          >
-            Reset
-          </button>
-        </div>
-        <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
-          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Keyword search
-            <input
-              value={filters.query}
-              onChange={(event) => setFilters((prev) => ({ ...prev, query: event.target.value }))}
-              placeholder="Search company names, traction, attachments"
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
-            />
-          </label>
-
-          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Stage
-            <select
-              value={filters.stage}
-              onChange={(event) => setFilters((prev) => ({ ...prev, stage: event.target.value }))}
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+      {canReview && (
+        <section className="space-y-4 rounded-2xl border border-slate-800/70 bg-slate-950/60 p-6">
+          <div className="flex items-center justify-between">
+            <h2 className="text-lg font-semibold text-slate-100">Filters</h2>
+            <button
+              type="button"
+              onClick={resetFilters}
+              className="text-xs font-semibold uppercase tracking-wide text-blue-200 transition hover:text-blue-100"
             >
-              <option value="">All stages</option>
-              {stageOptions.map((option) => (
-                <option key={option.value} value={option.value}>
-                  {option.label}
-                </option>
-              ))}
-            </select>
-          </label>
+              Reset
+            </button>
+          </div>
+          <div className="grid gap-4 md:grid-cols-2 lg:grid-cols-3">
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Keyword search
+              <input
+                value={filters.query}
+                onChange={(event) => setFilters((prev) => ({ ...prev, query: event.target.value }))}
+                placeholder="Search company names, traction, attachments"
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 placeholder:text-slate-500 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
 
-          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Status
-            <select
-              value={filters.status}
-              onChange={(event) => setFilters((prev) => ({ ...prev, status: event.target.value }))}
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
-            >
-              <option value="">All statuses</option>
-              {statusOptions.map((option) => (
-                <option key={option} value={option}>
-                  {statusLabels[option]}
-                </option>
-              ))}
-            </select>
-          </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Stage
+              <select
+                value={filters.stage}
+                onChange={(event) => setFilters((prev) => ({ ...prev, stage: event.target.value }))}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="">All stages</option>
+                {stageOptions.map((option) => (
+                  <option key={option.value} value={option.value}>
+                    {option.label}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Min score
-            <input
-              type="number"
-              min={0}
-              value={filters.minScore}
-              onChange={(event) => setFilters((prev) => ({ ...prev, minScore: event.target.value }))}
-              placeholder={scoreBounds.min ? `${scoreBounds.min}` : "0"}
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
-            />
-          </label>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Status
+              <select
+                value={filters.status}
+                onChange={(event) => setFilters((prev) => ({ ...prev, status: event.target.value }))}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              >
+                <option value="">All statuses</option>
+                {statusOptions.map((option) => (
+                  <option key={option} value={option}>
+                    {statusLabels[option]}
+                  </option>
+                ))}
+              </select>
+            </label>
 
-          <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
-            Max score
-            <input
-              type="number"
-              min={0}
-              value={filters.maxScore}
-              onChange={(event) => setFilters((prev) => ({ ...prev, maxScore: event.target.value }))}
-              placeholder={scoreBounds.max ? `${scoreBounds.max}` : ""}
-              className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
-            />
-          </label>
-        </div>
-      </section>
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Min score
+              <input
+                type="number"
+                min={0}
+                value={filters.minScore}
+                onChange={(event) => setFilters((prev) => ({ ...prev, minScore: event.target.value }))}
+                placeholder={scoreBounds.min ? `${scoreBounds.min}` : "0"}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+
+            <label className="flex flex-col gap-2 text-xs font-semibold uppercase tracking-wide text-slate-400">
+              Max score
+              <input
+                type="number"
+                min={0}
+                value={filters.maxScore}
+                onChange={(event) => setFilters((prev) => ({ ...prev, maxScore: event.target.value }))}
+                placeholder={scoreBounds.max ? `${scoreBounds.max}` : ""}
+                className="rounded-md border border-slate-700 bg-slate-950 px-3 py-2 text-sm text-slate-100 focus:border-blue-500 focus:outline-none"
+              />
+            </label>
+          </div>
+        </section>
+      )}
 
       <section className="space-y-6">
         {loading ? (

@@ -7,6 +7,7 @@ import {
   setManualSubmissionScore,
   summarizeOnboardingSubmission,
 } from "@/lib/onboarding/service";
+import { loadUserProfile, canReviewOnboarding } from "@/lib/auth/access";
 import type { OnboardingSubmissionScore } from "@/lib/onboarding/types";
 
 export const dynamic = "force-dynamic";
@@ -33,6 +34,18 @@ export async function PATCH(
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  let profile;
+  try {
+    profile = await loadUserProfile(session.user.id);
+  } catch (error) {
+    console.error("PATCH /protected/onboarding/submissions profile load failed", error);
+    return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
+  }
+
+  if (!canReviewOnboarding(profile)) {
+    return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
   const { submissionId: submissionIdValue } = await params;

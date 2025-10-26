@@ -2,20 +2,30 @@ import { NextResponse } from "next/server";
 import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/auth";
 import {
-	getUserProfile,
+	getUserProfileOrThrow,
 	updateUserProfile,
 } from "@/lib/db/auth/user";
 
 export async function GET() {
 	const session = await auth();
 
-	const profile = await getUserProfile(session!.user!.id!);
-
-	if (!profile) {
-		return NextResponse.json({ ok: false }, { status: 404 });
+	if (!session?.user?.id) {
+		return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
 	}
 
-	return NextResponse.json({ ok: true, profile });
+	try {
+		const profile = await getUserProfileOrThrow(session.user.id);
+		if (!profile.isActive) {
+			return NextResponse.json(
+				{ ok: false, error: "Account is disabled" },
+				{ status: 403 },
+			);
+		}
+		return NextResponse.json({ ok: true, profile });
+	} catch (error) {
+		console.error("GET /api/protected/auth failed", error);
+		return NextResponse.json({ ok: false, error: "Profile not found" }, { status: 404 });
+	}
 }
 
 export async function PATCH(request: NextRequest) {

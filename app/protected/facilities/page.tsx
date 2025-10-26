@@ -323,6 +323,44 @@ export default function FacilitiesPage() {
   const [resourceFormState, setResourceFormState] = useState<ResourceFormState>({ ...initialResourceFormState });
   const [resourceSubmitting, setResourceSubmitting] = useState(false);
   const [resourceMessage, setResourceMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+  const [canManageResources, setCanManageResources] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    (async () => {
+      try {
+        const response = await fetch("/api/protected/auth", { cache: "no-store" });
+        if (!response.ok || cancelled) {
+          return;
+        }
+
+        const payload = (await response.json().catch(() => null)) as {
+          ok?: boolean;
+          profile?: { permissions?: string[] };
+        } | null;
+
+        if (cancelled || !payload?.ok || !Array.isArray(payload.profile?.permissions)) {
+          return;
+        }
+
+        setCanManageResources(payload.profile.permissions.includes("facilities:manage"));
+      } catch {
+        if (!cancelled) {
+          setCanManageResources(false);
+        }
+      }
+    })();
+
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!canManageResources && showResourceForm) {
+      setShowResourceForm(false);
+    }
+  }, [canManageResources, showResourceForm]);
 
   const handleResourceFieldChange = (field: keyof ResourceFormState, value: string) => {
     setResourceFormState((prev) => ({ ...prev, [field]: value }));
@@ -330,6 +368,9 @@ export default function FacilitiesPage() {
   };
 
   const toggleResourceForm = () => {
+    if (!canManageResources) {
+      return;
+    }
     setResourceMessage(null);
     setShowResourceForm((open) => {
       if (open) {
@@ -342,6 +383,11 @@ export default function FacilitiesPage() {
   const handleResourceSubmit = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
     setResourceMessage(null);
+
+    if (!canManageResources) {
+      setResourceMessage({ type: "error", text: "You are not allowed to register facilities." });
+      return;
+    }
 
     const trimmedName = resourceFormState.name.trim();
     if (!trimmedName) {
@@ -602,7 +648,8 @@ export default function FacilitiesPage() {
       <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
         <aside className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
           <div className="flex flex-col gap-5">
-            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4">
+            {canManageResources && (
+              <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4">
               <div className="flex items-start justify-between gap-2">
                 <div>
                   <h3 className="text-sm font-semibold text-gray-700">Register a facility</h3>
@@ -723,7 +770,8 @@ export default function FacilitiesPage() {
                   </div>
                 </form>
               )}
-            </div>
+              </div>
+            )}
 
             <div>
               <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Resources</h2>
