@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState, type FormEvent } from "react";
 
 type FacilityResource = {
   id: string;
@@ -54,11 +54,33 @@ type FacilityAnalyticsOverview = {
   idleResources: FacilityUtilisationSummary[];
 };
 
+type ResourceFormState = {
+  name: string;
+  type: string;
+  location: string;
+  capacity: string;
+  description: string;
+  tags: string;
+};
+
 const RESOURCE_LABELS: Record<string, string> = {
   meeting_room: "Meeting Room",
   lab: "R&D Lab",
   equipment: "Specialised Equipment",
   other: "Other",
+};
+
+const RESOURCE_TYPE_OPTIONS = (
+  Object.entries(RESOURCE_LABELS) as Array<[string, string]>
+).map(([value, label]) => ({ value, label }));
+
+const initialResourceFormState: ResourceFormState = {
+  name: "",
+  type: RESOURCE_TYPE_OPTIONS[0]?.value ?? "meeting_room",
+  location: "",
+  capacity: "",
+  description: "",
+  tags: "",
 };
 
 const formatDateTime = (iso: string): string => {
@@ -297,6 +319,92 @@ export default function FacilitiesPage() {
   const [approvalMessage, setApprovalMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
   const [reviewingKey, setReviewingKey] = useState<string | null>(null);
   const [cancellingBookingId, setCancellingBookingId] = useState<string | null>(null);
+  const [showResourceForm, setShowResourceForm] = useState(false);
+  const [resourceFormState, setResourceFormState] = useState<ResourceFormState>({ ...initialResourceFormState });
+  const [resourceSubmitting, setResourceSubmitting] = useState(false);
+  const [resourceMessage, setResourceMessage] = useState<{ type: "success" | "error"; text: string } | null>(null);
+
+  const handleResourceFieldChange = (field: keyof ResourceFormState, value: string) => {
+    setResourceFormState((prev) => ({ ...prev, [field]: value }));
+    setResourceMessage(null);
+  };
+
+  const toggleResourceForm = () => {
+    setResourceMessage(null);
+    setShowResourceForm((open) => {
+      if (open) {
+        setResourceFormState({ ...initialResourceFormState });
+      }
+      return !open;
+    });
+  };
+
+  const handleResourceSubmit = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    setResourceMessage(null);
+
+    const trimmedName = resourceFormState.name.trim();
+    if (!trimmedName) {
+      setResourceMessage({ type: "error", text: "Name is required." });
+      return;
+    }
+
+    let capacityNumber: number | undefined;
+    const capacityValue = resourceFormState.capacity.trim();
+    if (capacityValue.length > 0) {
+      const parsed = Number.parseInt(capacityValue, 10);
+      if (Number.isNaN(parsed) || parsed < 0) {
+        setResourceMessage({ type: "error", text: "Capacity must be a non-negative number." });
+        return;
+      }
+      capacityNumber = parsed;
+    }
+
+    const tags = resourceFormState.tags
+      .split(",")
+      .map((tag) => tag.trim())
+      .filter((tag) => tag.length > 0);
+
+    setResourceSubmitting(true);
+
+    try {
+      const response = await fetch("/api/protected/facilities/resources", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          type: resourceFormState.type,
+          name: trimmedName,
+          location: resourceFormState.location.trim() || undefined,
+          capacity: capacityNumber,
+          description: resourceFormState.description.trim() || undefined,
+          tags: tags.length > 0 ? tags : undefined,
+        }),
+      });
+
+      const payload = (await response.json().catch(() => null)) as {
+        ok?: boolean;
+        resource?: FacilityResource;
+        error?: string;
+      } | null;
+
+      if (!response.ok || !payload?.ok || !payload.resource) {
+        throw new Error(payload?.error ?? "Unable to save facility");
+      }
+
+      setResourceMessage({ type: "success", text: `${payload.resource.name} registered successfully.` });
+      setResourceFormState({ ...initialResourceFormState });
+      setShowResourceForm(false);
+      setSelectedResourceId(payload.resource.id);
+      refresh();
+    } catch (error) {
+      setResourceMessage({
+        type: "error",
+        text: error instanceof Error ? error.message : "Unable to save facility",
+      });
+    } finally {
+      setResourceSubmitting(false);
+    }
+  };
 
   useEffect(() => {
     if (!selectedResourceId && resources.length > 0) {
@@ -493,40 +601,167 @@ export default function FacilitiesPage() {
 
       <div className="grid gap-6 lg:grid-cols-[320px_1fr]">
         <aside className="rounded-2xl border border-gray-200 bg-white p-4 shadow-sm">
-          <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Resources</h2>
-          <div className="mt-3 flex flex-col gap-2">
-            {loadingResources && (
-              <p className="text-sm text-gray-400">Loading resources...</p>
-            )}
-            {!loadingResources && resources.length === 0 && (
-              <p className="text-sm text-gray-400">No facilities registered yet.</p>
-            )}
-            {resources.map((resource) => {
-              const isSelected = resource.id === selectedResourceId;
-              return (
+          <div className="flex flex-col gap-5">
+            <div className="rounded-xl border border-dashed border-gray-300 bg-gray-50 p-4">
+              <div className="flex items-start justify-between gap-2">
+                <div>
+                  <h3 className="text-sm font-semibold text-gray-700">Register a facility</h3>
+                  <p className="text-xs text-gray-500">Add rooms, labs, or equipment so teams can book them.</p>
+                </div>
                 <button
-                  key={resource.id}
                   type="button"
-                  onClick={() => setSelectedResourceId(resource.id)}
-                  className={`rounded-xl border px-3 py-2 text-left transition ${
-                    isSelected
-                      ? "border-blue-500 bg-blue-50 text-blue-700"
-                      : "border-transparent bg-gray-50 text-gray-700 hover:border-gray-200 hover:bg-gray-100"
+                  onClick={toggleResourceForm}
+                  disabled={resourceSubmitting}
+                  aria-expanded={showResourceForm}
+                  className="rounded-lg border border-gray-300 px-2 py-1 text-xs font-semibold text-gray-600 transition hover:border-blue-400 hover:text-blue-600 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-300"
+                >
+                  {showResourceForm ? "Close" : "Add resource"}
+                </button>
+              </div>
+              {resourceMessage && (
+                <p
+                  className={`mt-3 text-xs ${
+                    resourceMessage.type === "success" ? "text-green-600" : "text-red-600"
                   }`}
                 >
-                  <span className="block text-sm font-semibold">
-                    {resource.name}
-                  </span>
-                  <span className="block text-xs text-gray-500">
-                    {RESOURCE_LABELS[resource.type] ?? "Resource"}
-                    {resource.location ? ` • ${resource.location}` : ""}
-                  </span>
-                  {typeof resource.capacity === "number" && (
-                    <span className="block text-xs text-gray-400">Capacity {resource.capacity}</span>
-                  )}
-                </button>
-              );
-            })}
+                  {resourceMessage.text}
+                </p>
+              )}
+              {showResourceForm && (
+                <form onSubmit={handleResourceSubmit} className="mt-3 flex flex-col gap-3 text-sm">
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">Type</span>
+                    <select
+                      value={resourceFormState.type}
+                      onChange={(event) => handleResourceFieldChange("type", event.target.value)}
+                      disabled={resourceSubmitting}
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                    >
+                      {RESOURCE_TYPE_OPTIONS.map(({ value, label }) => (
+                        <option key={value} value={value}>
+                          {label}
+                        </option>
+                      ))}
+                    </select>
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">Name</span>
+                    <input
+                      type="text"
+                      value={resourceFormState.name}
+                      onChange={(event) => handleResourceFieldChange("name", event.target.value)}
+                      required
+                      disabled={resourceSubmitting}
+                      placeholder="Hybrid meeting room"
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                    />
+                  </label>
+                  <div className="grid gap-3 sm:grid-cols-2">
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">Location</span>
+                      <input
+                        type="text"
+                        value={resourceFormState.location}
+                        onChange={(event) => handleResourceFieldChange("location", event.target.value)}
+                        disabled={resourceSubmitting}
+                        placeholder="Innovation Tower, Level 3"
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                      />
+                    </label>
+                    <label className="flex flex-col gap-1">
+                      <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">Capacity</span>
+                      <input
+                        type="number"
+                        min={0}
+                        value={resourceFormState.capacity}
+                        onChange={(event) => handleResourceFieldChange("capacity", event.target.value)}
+                        disabled={resourceSubmitting}
+                        placeholder="10"
+                        className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                      />
+                    </label>
+                  </div>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">Description</span>
+                    <textarea
+                      value={resourceFormState.description}
+                      onChange={(event) => handleResourceFieldChange("description", event.target.value)}
+                      disabled={resourceSubmitting}
+                      rows={3}
+                      placeholder="High-definition video conferencing room with dual displays."
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                    />
+                  </label>
+                  <label className="flex flex-col gap-1">
+                    <span className="text-xs font-semibold uppercase tracking-wide text-gray-600">Tags</span>
+                    <input
+                      type="text"
+                      value={resourceFormState.tags}
+                      onChange={(event) => handleResourceFieldChange("tags", event.target.value)}
+                      disabled={resourceSubmitting}
+                      placeholder="camera, hybrid, boardroom"
+                      className="rounded-lg border border-gray-300 bg-white px-3 py-2 text-sm text-gray-700 shadow-sm focus:border-blue-500 focus:outline-none focus:ring-2 focus:ring-blue-100 disabled:bg-gray-100"
+                    />
+                    <span className="text-xs text-gray-400">Separate multiple tags with commas.</span>
+                  </label>
+                  <div className="flex justify-end gap-2">
+                    <button
+                      type="button"
+                      onClick={toggleResourceForm}
+                      disabled={resourceSubmitting}
+                      className="rounded-lg border border-gray-300 px-3 py-2 text-xs font-semibold text-gray-600 transition hover:border-gray-400 hover:text-gray-700 disabled:cursor-not-allowed disabled:border-gray-200 disabled:text-gray-300"
+                    >
+                      Cancel
+                    </button>
+                    <button
+                      type="submit"
+                      disabled={resourceSubmitting}
+                      className="rounded-lg bg-blue-600 px-3 py-2 text-xs font-semibold text-white shadow-sm transition hover:bg-blue-500 disabled:cursor-not-allowed disabled:bg-blue-200"
+                    >
+                      {resourceSubmitting ? "Saving..." : "Save resource"}
+                    </button>
+                  </div>
+                </form>
+              )}
+            </div>
+
+            <div>
+              <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-500">Resources</h2>
+              <div className="mt-3 flex flex-col gap-2">
+                {loadingResources && (
+                  <p className="text-sm text-gray-400">Loading resources...</p>
+                )}
+                {!loadingResources && resources.length === 0 && (
+                  <p className="text-sm text-gray-400">No facilities registered yet.</p>
+                )}
+                {resources.map((resource) => {
+                  const isSelected = resource.id === selectedResourceId;
+                  return (
+                    <button
+                      key={resource.id}
+                      type="button"
+                      onClick={() => setSelectedResourceId(resource.id)}
+                      className={`rounded-xl border px-3 py-2 text-left transition ${
+                        isSelected
+                          ? "border-blue-500 bg-blue-50 text-blue-700"
+                          : "border-transparent bg-gray-50 text-gray-700 hover:border-gray-200 hover:bg-gray-100"
+                      }`}
+                    >
+                      <span className="block text-sm font-semibold">
+                        {resource.name}
+                      </span>
+                      <span className="block text-xs text-gray-500">
+                        {RESOURCE_LABELS[resource.type] ?? "Resource"}
+                        {resource.location ? ` • ${resource.location}` : ""}
+                      </span>
+                      {typeof resource.capacity === "number" && (
+                        <span className="block text-xs text-gray-400">Capacity {resource.capacity}</span>
+                      )}
+                    </button>
+                  );
+                })}
+              </div>
+            </div>
           </div>
         </aside>
 
