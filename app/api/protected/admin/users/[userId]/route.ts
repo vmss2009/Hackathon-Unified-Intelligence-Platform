@@ -1,9 +1,13 @@
 import { NextResponse } from "next/server";
+import type { NextRequest } from "next/server";
 import { auth } from "@/lib/auth/user";
 import { canManageUsers, loadUserProfile } from "@/lib/auth/access";
 import { setUserActiveState } from "@/lib/db/auth/user";
 
-export async function PATCH(request: Request, { params }: { params: { userId: string } }) {
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ userId?: string | string[] }> }
+) {
   const session = await auth();
 
   if (!session?.user?.id) {
@@ -22,7 +26,9 @@ export async function PATCH(request: Request, { params }: { params: { userId: st
     return NextResponse.json({ ok: false, error: "Forbidden" }, { status: 403 });
   }
 
-  const { userId } = params;
+  const resolvedParams = await params;
+  const userIdValue = resolvedParams?.userId;
+  const userId = Array.isArray(userIdValue) ? userIdValue[0] : userIdValue;
   if (!userId) {
     return NextResponse.json({ ok: false, error: "User ID is required" }, { status: 400 });
   }
