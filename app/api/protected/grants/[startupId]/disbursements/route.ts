@@ -174,10 +174,14 @@ const resolveErrorStatus = (message: string): number => {
   return 500;
 };
 
-export async function GET(request: NextRequest, context: { params?: { startupId?: string } }) {
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ startupId?: string | string[] }> }
+) {
   try {
     await ensureAuthenticated();
-    const startupId = context?.params?.startupId;
+    const { startupId: startupIdValue } = await params;
+    const startupId = Array.isArray(startupIdValue) ? startupIdValue[0] : startupIdValue;
     if (!startupId) {
       return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
     }
@@ -196,10 +200,14 @@ export async function GET(request: NextRequest, context: { params?: { startupId?
   }
 }
 
-export async function POST(request: NextRequest, context: { params?: { startupId?: string } }) {
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ startupId?: string | string[] }> }
+) {
   try {
     const actor = await ensureAuthenticated();
-    const startupId = context?.params?.startupId;
+    const { startupId: startupIdValue } = await params;
+    const startupId = Array.isArray(startupIdValue) ? startupIdValue[0] : startupIdValue;
     if (!startupId) {
       return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
     }
@@ -248,10 +256,14 @@ export async function POST(request: NextRequest, context: { params?: { startupId
   }
 }
 
-export async function PUT(request: NextRequest, context: { params?: { startupId?: string } }) {
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ startupId?: string | string[] }> }
+) {
   try {
     const actor = await ensureAuthenticated();
-    const startupId = context?.params?.startupId;
+    const { startupId: startupIdValue } = await params;
+    const startupId = Array.isArray(startupIdValue) ? startupIdValue[0] : startupIdValue;
     if (!startupId) {
       return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
     }

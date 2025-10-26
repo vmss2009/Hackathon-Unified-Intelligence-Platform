@@ -26,13 +26,17 @@ const toNumber = (value: unknown): number | undefined => {
   return undefined;
 };
 
-export async function PATCH(request: NextRequest, context: { params?: { submissionId?: string } }) {
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ submissionId?: string | string[] }> }
+) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const submissionId = context?.params?.submissionId;
+  const { submissionId: submissionIdValue } = await params;
+  const submissionId = Array.isArray(submissionIdValue) ? submissionIdValue[0] : submissionIdValue;
   if (!submissionId) {
     return NextResponse.json({ ok: false, error: "Submission id is required" }, { status: 400 });
   }

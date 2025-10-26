@@ -22,13 +22,20 @@ const ensureAuthenticated = async () => {
   return session;
 };
 
+const resolveStartupId = async (
+  params: Promise<{ startupId?: string | string[] }>
+) => {
+  const { startupId } = await params;
+  return Array.isArray(startupId) ? startupId[0] : startupId;
+};
+
 export async function GET(
   _request: NextRequest,
-  context: any,
+  { params }: { params: Promise<{ startupId?: string | string[] }> },
 ) {
   try {
     await ensureAuthenticated();
-    const startupId = context.params?.startupId;
+    const startupId = await resolveStartupId(params);
     if (!startupId) {
       return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
     }
@@ -52,11 +59,11 @@ export async function GET(
 
 export async function PUT(
   request: NextRequest,
-  context: any,
+  { params }: { params: Promise<{ startupId?: string | string[] }> },
 ) {
   try {
     await ensureAuthenticated();
-    const startupId = context.params?.startupId;
+    const startupId = await resolveStartupId(params);
     if (!startupId) {
       return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
     }
@@ -83,11 +90,11 @@ export async function PUT(
 
 export async function POST(
   request: NextRequest,
-  context: any,
+  { params }: { params: Promise<{ startupId?: string | string[] }> },
 ) {
   try {
     const session = await ensureAuthenticated();
-    const startupId = context.params?.startupId;
+    const startupId = await resolveStartupId(params);
     if (!startupId) {
       return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
     }

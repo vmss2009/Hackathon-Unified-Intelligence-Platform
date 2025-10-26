@@ -20,13 +20,17 @@ const asWindow = (value: unknown): GrantReportWindow | null => {
   return { start, end };
 };
 
-export async function POST(request: NextRequest, context: { params?: { startupId?: string } }) {
+export async function POST(
+  request: NextRequest,
+  { params }: { params: Promise<{ startupId?: string | string[] }> }
+) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const startupId = context?.params?.startupId;
+  const { startupId: startupIdValue } = await params;
+  const startupId = Array.isArray(startupIdValue) ? startupIdValue[0] : startupIdValue;
   if (!startupId) {
     return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
   }

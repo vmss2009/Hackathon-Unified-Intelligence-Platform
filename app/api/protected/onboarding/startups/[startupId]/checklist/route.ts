@@ -6,14 +6,24 @@ import { OnboardingChecklist } from "@/lib/onboarding/types";
 
 export const dynamic = "force-dynamic";
 
-export async function GET(_request: NextRequest, context: any) {
+const resolveStartupId = async (
+  params: Promise<{ startupId?: string | string[] }>
+) => {
+  const { startupId } = await params;
+  return Array.isArray(startupId) ? startupId[0] : startupId;
+};
+
+export async function GET(
+  _request: NextRequest,
+  { params }: { params: Promise<{ startupId?: string | string[] }> }
+) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
   try {
-    const startupId = context?.params?.startupId;
+    const startupId = await resolveStartupId(params);
     if (!startupId) {
       return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
     }
@@ -29,13 +39,16 @@ export async function GET(_request: NextRequest, context: any) {
   }
 }
 
-export async function PUT(request: NextRequest, context: any) {
+export async function PUT(
+  request: NextRequest,
+  { params }: { params: Promise<{ startupId?: string | string[] }> }
+) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const startupId = context?.params?.startupId;
+  const startupId = await resolveStartupId(params);
   if (!startupId) {
     return NextResponse.json({ ok: false, error: "Startup id is required" }, { status: 400 });
   }

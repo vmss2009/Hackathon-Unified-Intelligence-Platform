@@ -5,13 +5,17 @@ import { cancelFacilityBooking, reviewFacilityBooking } from "@/lib/facilities/s
 
 export const dynamic = "force-dynamic";
 
-export async function PATCH(request: NextRequest, context: { params?: { bookingId?: string } }) {
+export async function PATCH(
+  request: NextRequest,
+  { params }: { params: Promise<{ bookingId?: string | string[] }> }
+) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const bookingId = context?.params?.bookingId;
+  const { bookingId: bookingIdValue } = await params;
+  const bookingId = Array.isArray(bookingIdValue) ? bookingIdValue[0] : bookingIdValue;
   if (!bookingId) {
     return NextResponse.json({ ok: false, error: "Booking id is required" }, { status: 400 });
   }

@@ -13,13 +13,17 @@ const parseStatus = (value: unknown): FacilityBookingStatus | undefined => {
   return undefined;
 };
 
-export async function GET(request: NextRequest, context: { params?: { resourceId?: string } }) {
+export async function GET(
+  request: NextRequest,
+  { params }: { params: Promise<{ resourceId?: string | string[] }> }
+) {
   const session = await auth();
   if (!session?.user?.id) {
     return NextResponse.json({ ok: false, error: "Unauthorized" }, { status: 401 });
   }
 
-  const resourceId = context?.params?.resourceId;
+  const { resourceId: resourceIdValue } = await params;
+  const resourceId = Array.isArray(resourceIdValue) ? resourceIdValue[0] : resourceIdValue;
   if (!resourceId) {
     return NextResponse.json({ ok: false, error: "Resource id required" }, { status: 400 });
   }
