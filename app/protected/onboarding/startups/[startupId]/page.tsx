@@ -1,6 +1,6 @@
 "use client";
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { useParams, useSearchParams } from "next/navigation";
 import {
@@ -22,7 +22,6 @@ import {
   OnboardingMilestoneUpdateInput,
   OnboardingSubmissionSummary,
 } from "@/lib/onboarding/types";
-import type { GrantRecord } from "@/lib/grants/types";
 
 type WorkspacePayload = {
   ok: boolean;
@@ -50,13 +49,6 @@ type DocumentUploadResponse = {
 type GrantCatalogResponse = {
   ok: boolean;
   grants: OnboardingGrantCatalogSnapshot;
-  error?: string;
-};
-
-type GrantRecordCatalogResponse = {
-  ok: boolean;
-  grants: GrantRecord[];
-  updatedAt?: string;
   error?: string;
 };
 
@@ -185,28 +177,6 @@ const formatCurrency = (value?: number, currency?: string) => {
   return formatNumber(value);
 };
 
-const toDateInputValue = (value?: string): string => {
-  if (!value) {
-    return "";
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return "";
-  }
-  return date.toISOString().slice(0, 10);
-};
-
-const normaliseDateInput = (value: string): string | undefined => {
-  if (!value || !value.trim().length) {
-    return undefined;
-  }
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) {
-    return undefined;
-  }
-  return date.toISOString();
-};
-
 const createNewChecklistItem = (title: string, description?: string, dueDate?: string): OnboardingChecklistItem => {
   return {
     id: crypto.randomUUID(),
@@ -306,25 +276,6 @@ export default function StartupWorkspacePage() {
   const [updatingGrantId, setUpdatingGrantId] = useState<string | null>(null);
   const [updatingEligibilityKey, setUpdatingEligibilityKey] = useState<string | null>(null);
   const [deletingGrantId, setDeletingGrantId] = useState<string | null>(null);
-  const [grantCatalogRecords, setGrantCatalogRecords] = useState<GrantRecord[]>([]);
-  const [grantCatalogUpdatedAt, setGrantCatalogUpdatedAt] = useState<string | null>(null);
-  const [loadingGrantCatalog, setLoadingGrantCatalog] = useState(false);
-  const [savingGrantCatalogRecord, setSavingGrantCatalogRecord] = useState(false);
-  const [deletingGrantCatalogRecordId, setDeletingGrantCatalogRecordId] = useState<string | null>(null);
-  const [grantRecordForm, setGrantRecordForm] = useState({
-    id: null as string | null,
-    name: "",
-    fundingAgency: "",
-    program: "",
-    sanctionNumber: "",
-    sanctionDate: "",
-    totalSanctionedAmount: "",
-    currency: "INR",
-    managingDepartment: "",
-    purpose: "",
-    startDate: "",
-    endDate: "",
-  });
   const [alumni, setAlumni] = useState<OnboardingAlumniSnapshot | null>(null);
   const [alumniForm, setAlumniForm] = useState({
     status: "in_program" as OnboardingGraduationStatus,
@@ -1228,194 +1179,6 @@ export default function StartupWorkspacePage() {
       setDeletingGrantId(null);
     }
   };
-
-  const resetGrantRecordForm = () => {
-    setGrantRecordForm({
-      id: null,
-      name: "",
-      fundingAgency: "",
-      program: "",
-      sanctionNumber: "",
-      sanctionDate: "",
-      totalSanctionedAmount: "",
-      currency: "INR",
-      managingDepartment: "",
-      purpose: "",
-      startDate: "",
-      endDate: "",
-    });
-  };
-
-  const handleEditGrantRecord = (record: GrantRecord) => {
-    setGrantRecordForm({
-      id: record.id,
-      name: record.name ?? "",
-      fundingAgency: record.fundingAgency ?? "",
-      program: record.program ?? "",
-      sanctionNumber: record.sanctionNumber ?? "",
-      sanctionDate: toDateInputValue(record.sanctionDate),
-      totalSanctionedAmount: Number.isFinite(record.totalSanctionedAmount)
-        ? String(record.totalSanctionedAmount)
-        : "",
-      currency: record.currency ?? "INR",
-      managingDepartment: record.managingDepartment ?? "",
-      purpose: record.purpose ?? "",
-      startDate: toDateInputValue(record.startDate),
-      endDate: toDateInputValue(record.endDate),
-    });
-  };
-
-  const refreshGrantCatalog = useCallback(
-    async (options: { signal?: AbortSignal; suppressErrorReset?: boolean } = {}) => {
-      if (!startupId) {
-        return;
-      }
-
-      const { signal, suppressErrorReset } = options;
-      if (!signal?.aborted) {
-        setLoadingGrantCatalog(true);
-        if (!suppressErrorReset) {
-          setError(null);
-        }
-      }
-
-      try {
-        const res = await fetch(`/api/protected/grants/${startupId}/catalog`, {
-          signal,
-        });
-
-        const payload = (await res.json()) as GrantRecordCatalogResponse;
-        if (!res.ok || !payload.ok) {
-          throw new Error(payload.error ?? "Unable to load grant catalog");
-        }
-
-        setGrantCatalogRecords(payload.grants);
-        setGrantCatalogUpdatedAt(payload.updatedAt ?? null);
-      } catch (err) {
-        if (signal?.aborted) {
-          return;
-        }
-        setError(err instanceof Error ? err.message : "Unable to load grant catalog");
-      } finally {
-        if (!signal?.aborted) {
-          setLoadingGrantCatalog(false);
-        }
-      }
-    },
-    [startupId],
-  );
-
-  const handleSubmitGrantRecord = async () => {
-    if (!startupId) {
-      return;
-    }
-
-    const name = grantRecordForm.name.trim();
-    if (!name.length) {
-      setError("Grant name is required");
-      return;
-    }
-
-    const amountValue = Number(grantRecordForm.totalSanctionedAmount.replace(/,/g, ""));
-    if (!Number.isFinite(amountValue) || amountValue <= 0) {
-      setError("Enter a sanctioned amount greater than zero");
-      return;
-    }
-
-    const payload = {
-      ...(grantRecordForm.id ? { id: grantRecordForm.id } : {}),
-      name,
-      fundingAgency: grantRecordForm.fundingAgency.trim() || undefined,
-      program: grantRecordForm.program.trim() || undefined,
-      sanctionNumber: grantRecordForm.sanctionNumber.trim() || undefined,
-      sanctionDate: normaliseDateInput(grantRecordForm.sanctionDate),
-      totalSanctionedAmount: amountValue,
-      currency: grantRecordForm.currency.trim().length
-        ? grantRecordForm.currency.trim().toUpperCase()
-        : "INR",
-      managingDepartment: grantRecordForm.managingDepartment.trim() || undefined,
-      purpose: grantRecordForm.purpose.trim() || undefined,
-      startDate: normaliseDateInput(grantRecordForm.startDate),
-      endDate: normaliseDateInput(grantRecordForm.endDate),
-    };
-
-    setSavingGrantCatalogRecord(true);
-    setError(null);
-
-    try {
-      const res = await fetch(`/api/protected/grants/${startupId}/catalog`, {
-        method: grantRecordForm.id ? "PUT" : "POST",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ grant: payload }),
-      });
-
-      const response = (await res.json()) as GrantRecordCatalogResponse;
-      if (!res.ok || !response.ok) {
-        throw new Error(response.error ?? "Unable to save grant record");
-      }
-
-      setGrantCatalogRecords(response.grants);
-      setGrantCatalogUpdatedAt(response.updatedAt ?? null);
-      resetGrantRecordForm();
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to save grant record");
-    } finally {
-      setSavingGrantCatalogRecord(false);
-    }
-  };
-
-  const handleDeleteGrantRecord = async (grantId: string) => {
-    if (!startupId) {
-      return;
-    }
-
-    const confirmed = window.confirm(
-      "Remove this awarded grant? This will also hide it from the financial dashboard.",
-    );
-    if (!confirmed) {
-      return;
-    }
-
-    setDeletingGrantCatalogRecordId(grantId);
-    setError(null);
-
-    try {
-      const res = await fetch(`/api/protected/grants/${startupId}/catalog`, {
-        method: "DELETE",
-        headers: {
-          "Content-Type": "application/json",
-        },
-        body: JSON.stringify({ grantId }),
-      });
-
-      const payload = (await res.json()) as GrantRecordCatalogResponse;
-      if (!res.ok || !payload.ok) {
-        throw new Error(payload.error ?? "Unable to delete grant record");
-      }
-
-      setGrantCatalogRecords(payload.grants);
-      setGrantCatalogUpdatedAt(payload.updatedAt ?? null);
-      if (grantRecordForm.id === grantId) {
-        resetGrantRecordForm();
-      }
-    } catch (err) {
-      setError(err instanceof Error ? err.message : "Unable to delete grant record");
-    } finally {
-      setDeletingGrantCatalogRecordId(null);
-    }
-  };
-
-  useEffect(() => {
-    if (!startupId) {
-      return;
-    }
-
-    const controller = new AbortController();
-    refreshGrantCatalog({ signal: controller.signal, suppressErrorReset: true });
-    return () => controller.abort();
-  }, [refreshGrantCatalog, startupId]);
 
   const refreshAlumniRecord = () => {
     fetch(`/api/protected/onboarding/startups/${startupId}/alumni`)

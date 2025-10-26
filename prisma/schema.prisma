@@ -1,12 +1,12 @@
 generator client {
-  provider = "prisma-client-js"
+  provider        = "prisma-client-js"
   previewFeatures = ["multiSchema"]
 }
 
 datasource db {
   provider = "postgresql"
   url      = env("DATABASE_URL")
-  schemas  = ["core", "lifecycle", "grants", "facilities", "crm", "comms", "security", "analytics"]
+  schemas  = ["analytics", "comms", "core", "crm", "facilities", "grants", "lifecycle", "security"]
 }
 
 model OnboardingConfig {
@@ -31,7 +31,7 @@ model OnboardingSubmissionRecord {
 }
 
 model OnboardingChecklistRecord {
-  startupId String  @id
+  startupId String   @id
   payload   Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -40,7 +40,7 @@ model OnboardingChecklistRecord {
 }
 
 model OnboardingMilestonePlanRecord {
-  startupId String  @id
+  startupId String   @id
   payload   Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -49,7 +49,7 @@ model OnboardingMilestonePlanRecord {
 }
 
 model OnboardingAlumniRecordStorage {
-  startupId String  @id
+  startupId String   @id
   payload   Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -58,7 +58,7 @@ model OnboardingAlumniRecordStorage {
 }
 
 model OnboardingGrantCatalogRecord {
-  startupId String  @id
+  startupId String   @id
   payload   Json
   createdAt DateTime @default(now())
   updatedAt DateTime @updatedAt
@@ -66,78 +66,37 @@ model OnboardingGrantCatalogRecord {
   @@schema("grants")
 }
 
-model FacilityResourceRecord {
+model OnboardingDocumentRecord {
   id          String   @id @default(uuid())
-  type        String
+  startupId   String
+  key         String
   name        String
-  location    String?
-  capacity    Int?
-  description String?
-  tags        Json?
-  availability Json?
+  size        Int
+  contentType String?
+  uploadedAt  DateTime @default(now())
+  uploadedBy  String?
   metadata    Json?
   createdAt   DateTime @default(now())
   updatedAt   DateTime @updatedAt
 
-  bookings FacilityBookingRecord[]
-
-  @@schema("facilities")
-  @@index([type, name])
-}
-
-model FacilityBookingRecord {
-  id             String   @id @default(uuid())
-  resourceId     String
-  resource       FacilityResourceRecord @relation(fields: [resourceId], references: [id])
-  title          String
-  description    String?
-  startTime      DateTime
-  endTime        DateTime
-  status         String   @default("confirmed")
-  createdBy      String
-  createdByName  String?
-  createdByEmail String?
-  participants   Json?
-  metadata       Json?
-  createdAt      DateTime @default(now())
-  updatedAt      DateTime @updatedAt
-
-  @@schema("facilities")
-  @@index([resourceId, startTime, endTime])
-  @@index([createdBy, startTime])
-}
-
-model OnboardingDocumentRecord {
-  id         String   @id @default(uuid())
-  startupId  String
-  key        String
-  name       String
-  size       Int
-  contentType String?
-  uploadedAt DateTime @default(now())
-  uploadedBy String?
-  metadata   Json?
-  createdAt  DateTime @default(now())
-  updatedAt  DateTime @updatedAt
-
-  @@schema("lifecycle")
   @@unique([startupId, key])
+  @@schema("lifecycle")
 }
 
 model User {
-  id          String   @id @default(uuid())
-  email       String   @unique
+  id          String    @id @default(uuid())
+  email       String    @unique
   name        String?
   phone       String?
   avatarUrl   String?
-  timezone    String? @default("UTC")
-  locale      String? @default("en")
+  timezone    String?   @default("UTC")
+  locale      String?   @default("en")
   metadata    Json?
-  isActive    Boolean  @default(true)
+  isActive    Boolean   @default(true)
   lastLoginAt DateTime?
-  createdAt   DateTime @default(now())
-  updatedAt   DateTime @updatedAt
+  createdAt   DateTime  @default(now())
+  updatedAt   DateTime  @updatedAt
 
-  @@schema("core")
   @@index([email])
+  @@schema("core")
 }
